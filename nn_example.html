@@ -1,0 +1,250 @@
+<html>
+
+<head>
+  <title>CNN Example</title>
+  <link href='http://fonts.googleapis.com/css?family=Cabin' rel='stylesheet' type='text/css'>
+  <script src="http://code.jquery.com/jquery-1.9.1.js"></script>
+
+  <!--script src="js/jquery-1.9.1.min.js"></script-->
+  <script src="js/npgmain.js"></script>
+  <script src="js/convnet/convnet.js"></script>
+  <script src="js/convnet/util.js"></script>
+  <script src="js/nn_example.js"></script>
+
+  <!-- Latest compiled and minified CSS -->
+  <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css"
+    integrity="sha384-BVYiiSIFeK1dGmJRAkycuHAHRg32OmUcww7on3RYdg4Va+PmSTsz/K68vbdEjh4u" crossorigin="anonymous">
+
+  <!-- Optional theme -->
+  <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap-theme.min.css"
+    integrity="sha384-rHyoN1iRsVXV4nD0JutlnGaslCJuC7uwjduW9SVrLvRYooPp2bWYgmgJQIXwl/Sp" crossorigin="anonymous">
+
+  <!-- Latest compiled and minified JavaScript -->
+  <script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/js/bootstrap.min.js"
+    integrity="sha384-Tc5IQib027qvyjSMfHjOMaLkfuWVxZxUPnCJA7l2mCWNIpG9mGCD8wGNIcPD7Txa"
+    crossorigin="anonymous"></script>
+
+  <!-- Boostratp toggle plugin bootstraptoggle.com -->
+  <link href="https://gitcdn.github.io/bootstrap-toggle/2.2.2/css/bootstrap-toggle.min.css" rel="stylesheet">
+  <script src="https://gitcdn.github.io/bootstrap-toggle/2.2.2/js/bootstrap-toggle.min.js"></script>
+
+  <!-- fontawesome for player icons -->
+  <script src="https://use.fontawesome.com/0b9fb2d26a.js"></script>
+
+  <!-- d3 for player icons -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/3.4.11/d3.min.js"></script>
+
+
+
+  <style type="text/css">
+    body {
+      font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
+      color: #333;
+      padding: 20px;
+    }
+
+    canvas {
+      border: 1px solid #555;
+    }
+
+    #wrap {
+      width: 900px;
+      margin-right: auto;
+      margin-left: auto;
+      margin-bottom: 200px;
+    }
+
+    body {
+      font-family: 'Cabin';
+    }
+
+    .pane {
+      width: 420px;
+      display: inline-block;
+      vertical-align: top;
+    }
+
+    .layerdef {
+      width: 100%;
+      height: 190px;
+      font-family: 'Courier';
+      font-size: 13px;
+    }
+
+
+    input[type="submit"] {
+      margin: 3px;
+    }
+
+    .vertical-text-left {
+      transform: rotate(-90deg);
+      transform-origin: right, top;
+      -ms-transform: rotate(-90deg);
+      -ms-transform-origin: right, top;
+      -webkit-transform: rotate(-90deg);
+      -webkit-transform-origin: right, top;
+      position: absolute;
+      bottom: -250%;
+      left: -7%;
+      font-family: 'Cabin';
+      color: #737373;
+    }
+
+    .vertical-text-left2 {
+      transform: rotate(-90deg);
+      transform-origin: right, top;
+      -ms-transform: rotate(-90deg);
+      -ms-transform-origin: right, top;
+      -webkit-transform: rotate(-90deg);
+      -webkit-transform-origin: right, top;
+      position: absolute;
+      bottom: -200%;
+      left: -5%;
+      font-family: 'Cabin';
+      color: #737373;
+    }
+
+    .hori-axis {
+      color: #737373;
+      text-align: center;
+      font-family: 'Cabin';
+    }
+
+    .coll-md-12 {
+      margin-top: 3px;
+      margin-bottom: 3px;
+
+    }
+
+    .player {
+
+      width: 180px;
+      padding: 10px;
+      border: 2px solid #000;
+      border-radius: 15px;
+      -moz-border-radius: 15px;
+
+    }
+  </style>
+
+</head>
+
+<body>
+  <div class="container">
+    <div class="row">
+      <div class="col-md-6">
+        <h3>Feature Space</h3>
+      </div>
+      <div class="col-md-6">
+        <h3 id="layerlabel">Layer Space</h3>
+      </div>
+    </div>
+    <div class="row">
+      <div class="col-md-6">
+        <div style="color: #05fc2e;">
+          <h4>green spot = dog, green color = predict dog</h4>
+        </div>
+        <div style="color: #ed217c;">
+          <h4>red spot = cat, red color = predict cat</h4>
+        </div>
+      </div>
+      <div class="col-md-6">
+        <h4>
+          <div id="explanation"></div>
+        </h4>
+        <div id="loss_meter"></div>
+
+      </div>
+    </div>
+    <div class="row">
+      <div class="col-md-6">
+        <div class="vertical-text-left">PIXEL 1 Axis</div>
+        <div class="pull-left hori-axis">(0,0) PIXEL 2 Axis</div>
+      </div>
+      <div class="col-md-6">
+        <div class="vertical-text-left2" id="leftaxislabel"></div>
+        <div class="pull-left hori-axis" id="topaxislabel">A</div>
+      </div>
+    </div>
+    <div class="row">
+      <div class="col-md-6">
+        <canvas id="NPGcanvas" width="400" height="400">Browser not supported for Canvas. Get a real browser.</canvas>
+      </div>
+      <div class="col-md-6">
+        <canvas id="viscanvas" width="400" height="400">Browser not supported for Canvas. Get a real browser.</canvas>
+      </div>
+    </div>
+    <div class="row">
+      <div class="col-md-6">
+        <input class="btn btn-primary" id="buttondata1" type="submit" value="simple data" onclick="original_data();"
+          style="width: 100px; height: 30px;" />
+        <input class="btn btn-primary" id="buttondata2" type="submit" value="circle data" onclick="circle_data();"
+          style="width: 100px; height: 30px;" />
+        <input class="btn btn-primary" id="buttondata3" type="submit" value="spiral data" onclick="spiral_data();"
+          style="width: 100px; height: 30px;" />
+        <input class="btn btn-primary" id="buttondata4" type="submit" value="random data" onclick="random_data();"
+          style="width: 100px; height: 30px;" />
+
+      </div>
+      <div class="col-md-6">
+        <div id="layer_ixes"></div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="col-md-6">
+        <p>
+          <textarea id="layerdef" class="layerdef">
+        </textarea>
+          <br>
+        </p>
+
+      </div>
+      <div class="col-md-6">
+        <div class="row">
+          <div class="col-md-12">
+            <input class="btn btn-primary" id="buttoncycle" type="submit"
+              value="cycle through visualized neurons at selected layer" onclick="cycle();" style="height: 40px;" />
+          </div>
+        </div>
+        <div class="row">
+          <div class="col-md-4">
+            <div class="player">
+              <button type="button" id="button_reload" class="btn" onclick='reload()'>
+                <i class="fa fa-refresh"></i>
+              </button>
+              <button type="button" id="button_play" class="btn" onclick='playPress()'>
+                <i class="fa fa-play"></i>
+              </button>
+              <button type="button" id="button_stop" class="btn" onclick='stopPress()'>
+                <i class="fa fa-stop"></i>
+              </button>
+            </div>
+          </div>
+          <div class="col-md-4 " style="color: blue;">
+              <!--span class="pull-right"><h5>Show Prediction Space</h5></span-->
+            
+          </div>
+          <div class="col-md-2">
+            <input id="t_pred_space" type="checkbox" unchecked data-toggle="toggle">
+          </div>
+          <div class="col-md-2">
+              
+            </div>
+        </div>
+        <h3><a href="http://cs.stanford.edu/people/karpathy/convnetjs">(Source: Andrej Karpathy - convnetjs)</a></h3>
+      </div>
+    </div>
+  </div>
+  </div>
+  
+  </div>
+  </div>
+
+
+
+  </div>
+
+</body>
+
+</html>

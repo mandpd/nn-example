@@ -4,7 +4,7 @@ This is a slightly modified version of Andrej Kaparthy's convnetjs 2d example. Y
 
 ## Running the Example
 
-Open the nn_example.html file in a web browser
+Download the repo and open the nn_example.html file in a web browser, or click [here](https://mandpd.github.io/nn-example/nn_example.html)
 
 ## What the page shows
 

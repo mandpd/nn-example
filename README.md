@@ -71,4 +71,4 @@ For example, you can increase the number of neurons in the first and second hidd
 4. Explore the rest of the examples of the convnetjs library. You can even see how a convolutional neural network (which incorporates the types of layers in this model along with additional layer types that help to improve the image classification) does against the CIFAR-10 dataset itself, [here](https://cs.stanford.edu/people/karpathy/convnetjs/demo/cifar10.html) (Warning - this can overwhelm lower powered systems).
 
 
-For more information on how this description is composed, please consult the original convnetjs [documentation](https://cs.stanford.edu/people/karpathy/convnetjs/docs.html).
+For more information on how the description of the neural net is composed, please consult the original convnetjs [documentation](https://cs.stanford.edu/people/karpathy/convnetjs/docs.html).

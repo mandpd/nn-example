@@ -1,6 +1,8 @@
 # nn-example
 
-This is a slightly modified version of Andrej Kaparthy's convnetjs 2d example. You can see the original by clicking on the 'Source' link on the example page, or clicking [here](https://cs.stanford.edu/people/karpathy/convnetjs/demo/classify2d.html).
+This is a slightly modified version of Andrej Kaparthy's convnetjs 2d example. See more about the original below. This page describes what the visualization shows and how to use the buttons to understand more.
+
+> To view, click [here](https://cs.stanford.edu/people/karpathy/convnetjs/demo/classify2d.html)
 
 ## Running the Example
 
@@ -70,5 +72,8 @@ For example, you can increase the number of neurons in the first and second hidd
 
 4. Explore the rest of the examples of the convnetjs library. You can even see how a convolutional neural network (which incorporates the types of layers in this model along with additional layer types that help to improve the image classification) does against the CIFAR-10 dataset itself, [here](https://cs.stanford.edu/people/karpathy/convnetjs/demo/cifar10.html) (Warning - this can overwhelm lower powered systems).
 
+## Original Article
+
+You can see the original visualization by clicking on the 'Source' link on the example page, or clicking [here](https://cs.stanford.edu/people/karpathy/convnetjs/demo/classify2d.html).
 
 For more information on how the description of the neural net is composed, please consult the original convnetjs [documentation](https://cs.stanford.edu/people/karpathy/convnetjs/docs.html).

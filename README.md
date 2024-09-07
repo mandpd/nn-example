@@ -2,11 +2,7 @@
 
 This is a slightly modified version of Andrej Kaparthy's convnetjs 2d example. See more about the original below. This page describes what the visualization shows and how to use the buttons to understand more.
 
-> To view, click [here](https://cs.stanford.edu/people/karpathy/convnetjs/demo/classify2d.html)
-
-## Running the Example
-
-Download the [repo](https://github.com/mandpd/nn-example) and open the nn_example.html file in a web browser, or click [here](https://mandpd.github.io/nn-example/nn_example.html)
+> To view, click [here](https://mandpd.github.io/nn-example/nn_example.html)
 
 ## What the page shows
 
@@ -77,3 +73,9 @@ For example, you can increase the number of neurons in the first and second hidd
 You can see the original visualization by clicking on the 'Source' link on the example page, or clicking [here](https://cs.stanford.edu/people/karpathy/convnetjs/demo/classify2d.html).
 
 For more information on how the description of the neural net is composed, please consult the original convnetjs [documentation](https://cs.stanford.edu/people/karpathy/convnetjs/docs.html).
+
+## This Repo
+
+## Running the Example
+
+Download the [repo](https://github.com/mandpd/nn-example) and open the nn_example.html file in a web browser

@@ -9,25 +9,25 @@
   float: right;
 }
 .ltconv {
-  background-color: #FDD;
+  background-color: #fdd;
 }
 .ltrelu {
-  background-color: #FDF;
+  background-color: #fdf;
 }
 .ltpool {
-  background-color: #DDF;
+  background-color: #ddf;
 }
 .ltsoftmax {
-  background-color: #FFD;
+  background-color: #ffd;
 }
 .ltfc {
-  background-color: #DFF;
+  background-color: #dff;
 }
 .ltlrn {
-  background-color: #DFD; 
+  background-color: #dfd;
 }
 .ltdropout {
-  background-color: #AAA;  
+  background-color: #aaa;
 }
 .ltitle {
   color: #333;
@@ -50,7 +50,7 @@
 h1 {
   font-size: 16px;
   color: #333;
-  background-color: #DDD;
+  background-color: #ddd;
   border-bottom: 1px #999 solid;
   text-align: center;
 }
@@ -70,12 +70,12 @@ h2 {
   width: 64px;
 }
 .testdiv {
-  background-color: rgba(255,255,255,0.65);
+  background-color: rgba(255, 255, 255, 0.65);
   height: auto;
   width: auto;
   display: inline-block;
   font-size: 12px;
-  box-shadow: 0px 0px 2px 2px #EEE;
+  box-shadow: 0px 0px 2px 2px #eee;
   margin: 5px;
   padding: 5px;
   color: black;

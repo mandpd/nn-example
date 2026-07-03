@@ -12,9 +12,14 @@ const C = {
   muted   : '#898781',
   grid    : '#242422',
   axis    : '#3a3a37',
+  // internal names kept from the original cats-vs-dogs fork:
+  // DOG/dog = class 1 = blue  = ok ride  (PIREP grade 1–3, ≤ moderate turbulence)
+  // CAT/cat = class 0 = orange = rough   (PIREP grade 4–6, ≥ moderate chop → divert)
   dog     : '#3987e5',   // class 1
   cat     : '#d95926',   // class 0
-  dogWash : 'rgba(57, 135, 229, 0.17)',
+  // blue recedes on the dark surface where orange pops — the heavier blue
+  // alpha makes the two regions read at equal strength
+  dogWash : 'rgba(57, 135, 229, 0.30)',
   catWash : 'rgba(217, 89, 38, 0.17)',
   tag     : '#c98500',   // alt-click "tagged" point
   mesh    : 'rgba(255, 255, 255, 0.34)',
@@ -42,6 +47,7 @@ const state = {
   d0: 0, d1: 1,            // neuron pair shown in the selected-layer view
   view: { kind: 'layer' }, // inspector mode: layer | node {rowIdx,j} | edge {rowIdx,i,j}
   epoch: 0, loss: null, lossHist: [],
+  lossCurve: [],           // {e, v} samples for the timeline's loss trail
 };
 
 let net = null, trainer = null;
@@ -106,7 +112,7 @@ const DATASETS = {
   },
 };
 
-function setData(name) {
+function setData(name, animate) {
   state.dataset = name;
   data = []; labels = [];
   DATASETS[name]();
@@ -115,10 +121,12 @@ function setData(name) {
   clearPass();
   setRunActive(false);
   clearHistory();
-  state.epoch = 0; state.loss = null; state.lossHist = [];
+  endTimelinePreview(); // a fresh dataset is a reset: the title returns
+  state.epoch = 0; state.loss = null; state.lossHist = []; state.lossCurve = [];
   document.querySelectorAll('#datasetSeg button').forEach((b) => {
     b.setAttribute('aria-pressed', String(b.dataset.set === name));
   });
+  if (animate) animateDataArrival(); else clearDataReveal();
   requestRender();
 }
 
@@ -134,9 +142,10 @@ function buildNet() {
   buildTrainer();
   clearPass();
   setRunActive(false); // fresh weights: title returns until the next run starts
+  endTimelinePreview();
   clearHistory();
-  state.epoch = 0; state.loss = null; state.lossHist = [];
-  if (state.lix >= net.layers.length) state.lix = 1;
+  state.epoch = 0; state.loss = null; state.lossHist = []; state.lossCurve = [];
+  state.lix = net.layers.length - 1; // fresh net: start on the final output
   state.view = { kind: 'layer' }; // node/edge references die with the old net
   state.d0 = 0;
   state.d1 = Math.min(1, net.layers[state.lix].out_depth - 1);
@@ -158,11 +167,39 @@ let runActive = false;     // true from the first training step until Reset weig
 function setRunActive(on) {
   if (runActive === on) return;
   runActive = on;
-  // visibility swap inside a shared grid cell: the row keeps the header's height
+  if (on) clearDataReveal(); // training uses every point: snap them all in
+  updateHeaderSwap();
+  applyRunLocks();
+  updatePlayLabel();
+  requestRender();
+}
+
+/* the timeline replaces the header whenever it's meaningful: during a run, or
+   any time single-pass mode is open (each pass advances the epoch count).
+   Inference mode never trains, so it always keeps the title. Clicking the
+   timeline's Describe card while no run is showing it opens a *preview* that
+   lasts until the card is deselected or the page state is reset. */
+let timelinePreview = false;
+
+function timelineShown() {
+  return state.mode === 'pass'
+    || (state.mode === 'epoch' && (runActive || timelinePreview));
+}
+
+function endTimelinePreview() {
+  if (!timelinePreview) return;
+  timelinePreview = false;
+  const card = document.getElementById('desc-timeline');
+  if (card) card.classList.remove('hl');
+  updateHeaderSwap();
+  requestRender();
+}
+
+function updateHeaderSwap() {
+  // visibility swap over the header's absolute box: content below never moves
+  const on = timelineShown();
   $('#pageHeader').classList.toggle('swapped-out', on);
   $('#timeline').classList.toggle('swapped-out', !on);
-  applyRunLocks();
-  requestRender();
 }
 
 /* dataset and architecture are fixed for the duration of a run — the train has
@@ -172,6 +209,11 @@ function applyRunLocks() {
   $('#activationSel').disabled = runActive;
   document.querySelectorAll('#layerChips input, #layerChips button')
     .forEach((el) => { el.disabled = runActive; });
+  // rate sliders: set before a run, or retune live while it trains — but a
+  // paused run is a frozen snapshot, so no edits there
+  const frozen = runActive && !state.playing;
+  ['lrSlider', 'momentumSlider', 'batchSlider', 'l2Slider']
+    .forEach((id) => { $('#' + id).disabled = frozen; });
 }
 
 function timelineCeiling(e) {
@@ -189,7 +231,9 @@ function drawTimeline() {
   ctx.clearRect(0, 0, w, h);
   const padL = 16, padR = 16;
   const baseY = h - 20;
-  const dom = timelineCeiling(state.epoch);
+  // while scrubbing, the axis stays pinned to the run's true tip so the
+  // scale doesn't shrink under the pointer mid-drag
+  const dom = timelineCeiling(scrub ? scrub.tip.epoch : state.epoch);
   const xOf = (e) => padL + e / dom * (w - padL - padR);
 
   // track + ticks
@@ -216,7 +260,7 @@ function drawTimeline() {
 
   // progress up to "now"
   const xNow = xOf(state.epoch);
-  const live = state.playing;
+  const live = state.playing || !!(pass && pass.timer);
   if (xNow > padL + 1) {
     const grad = ctx.createLinearGradient(padL, 0, xNow, 0);
     grad.addColorStop(0, 'rgba(201,133,0,0.15)');
@@ -227,6 +271,56 @@ function drawTimeline() {
     ctx.moveTo(padL, baseY);
     ctx.lineTo(xNow, baseY);
     ctx.stroke();
+  }
+
+  // loss trail: the value the run is optimizing, rolling out behind "now".
+  // y is normalized to the run's own worst loss, so the shape reads as
+  // "how far it has fallen" no matter the dataset
+  const curve = state.lossCurve;
+  // the y-scale (and the ghost) always come from the full run, so scrubbing
+  // back doesn't rescale the trail under the pointer
+  const refCurve = scrub ? scrub.tip.curve : curve;
+  if (refCurve.length > 1) {
+    const top = 26, bot = baseY - 8;
+    let vmax = 0;
+    for (const p of refCurve) if (p.v > vmax) vmax = p.v;
+    if (vmax > 0 && bot > top) {
+      const yOf = (v) => bot - (v / vmax) * (bot - top);
+      const trace = (c) => {
+        ctx.beginPath();
+        c.forEach((p, i) => {
+          const x = xOf(p.e), y = yOf(p.v);
+          if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+        });
+        ctx.stroke();
+      };
+      if (scrub) {
+        // ghost of the run's true tip: the future the drag can return to
+        ctx.save();
+        ctx.globalAlpha = 0.3;
+        ctx.strokeStyle = C.spark;
+        ctx.lineWidth = 1.5;
+        trace(refCurve);
+        ctx.strokeStyle = C.tag;
+        const gx = xOf(scrub.tip.epoch);
+        ctx.beginPath();
+        ctx.moveTo(gx, baseY + 5);
+        ctx.lineTo(gx, 14);
+        ctx.stroke();
+        ctx.restore();
+      }
+      if (curve.length > 1) {
+        ctx.strokeStyle = C.spark;
+        ctx.lineWidth = 1.5;
+        trace(curve);
+        // leading dot riding the now line
+        const tip = curve[curve.length - 1];
+        ctx.beginPath();
+        ctx.arc(xOf(tip.e), yOf(tip.v), 2.4, 0, Math.PI * 2);
+        ctx.fillStyle = C.spark;
+        ctx.fill();
+      }
+    }
   }
 
   // the "now" line
@@ -248,6 +342,109 @@ function drawTimeline() {
   let lx = xNow + 9;
   if (lx + tw > w - 6) lx = xNow - 9 - tw;
   ctx.fillText(lbl, lx, 20);
+  if (state.loss != null) {
+    ctx.fillStyle = C.spark;
+    const ll = `loss ${state.loss.toFixed(3)}`;
+    const lw = ctx.measureText(ll).width;
+    let lx2 = xNow + 9;
+    if (lx2 + lw > w - 6) lx2 = xNow - 9 - lw;
+    ctx.fillText(ll, lx2, 34);
+  }
+}
+
+/* --- draggable now line: scrub a paused run back through its history --- */
+let scrub = null; // { tip, k, moved } while a drag is in flight
+
+function initTimelineScrub() {
+  const cv = $('#timelineCanvas');
+  const geo = () => {
+    const r = cv.getBoundingClientRect();
+    return { r, padL: 16, padR: 16, span: r.width - 32 };
+  };
+  const eligible = () =>
+    state.mode === 'epoch' && runActive && history.length > 0 && timelineShown();
+  const xNowOf = () => {
+    const { padL, span } = geo();
+    const dom = timelineCeiling(scrub ? scrub.tip.epoch : state.epoch);
+    return padL + state.epoch / dom * span;
+  };
+  // restore a recorded moment without touching the history stack — the drag
+  // is a preview; only pointerup commits
+  const applySnap = (s) => {
+    weightsRestore(s.weights);
+    state.epoch = s.epoch;
+    state.loss = s.loss;
+    state.lossHist = s.hist;
+    state.lossCurve = s.curve;
+    requestRender();
+  };
+
+  cv.addEventListener('pointerdown', (e) => {
+    if (!eligible()) return;
+    const { r } = geo();
+    if (Math.abs((e.clientX - r.left) - xNowOf()) > 9) return;
+    if (state.playing) setPlaying(false); // scrubbing is a paused-world activity
+    scrub = {
+      tip: {
+        epoch: state.epoch, loss: state.loss,
+        hist: state.lossHist.slice(), curve: state.lossCurve.slice(),
+        weights: weightsSnapshot(),
+      },
+      k: null, moved: false,
+    };
+    try { cv.setPointerCapture(e.pointerId); } catch { /* synthetic pointers */ }
+    cv.style.cursor = 'w-resize';
+    e.preventDefault();
+  });
+
+  cv.addEventListener('pointermove', (e) => {
+    const { r, padL, span } = geo();
+    const x = e.clientX - r.left;
+    if (!scrub) {
+      cv.style.cursor =
+        eligible() && !state.playing && Math.abs(x - xNowOf()) <= 9 ? 'w-resize' : '';
+      return;
+    }
+    const dom = timelineCeiling(scrub.tip.epoch);
+    const target = Math.min(scrub.tip.epoch, Math.max(0, (x - padL) / span * dom));
+    // snap to the nearest recorded moment: a history snapshot or the tip
+    let k = null, best = Math.abs(scrub.tip.epoch - target);
+    history.forEach((s, i) => {
+      const d = Math.abs(s.epoch - target);
+      if (d < best) { best = d; k = i; }
+    });
+    if (k === scrub.k) return;
+    scrub.k = k;
+    scrub.moved = true;
+    applySnap(k === null ? scrub.tip : history[k]);
+  });
+
+  const endScrub = () => {
+    if (!scrub) return;
+    const { tip, k, moved } = scrub;
+    scrub = null;
+    if (k === null) {
+      applySnap(tip); // released back at the true tip: nothing rewound
+    } else {
+      // commit: the run continues from here, and the snapshots above this
+      // point are spent — exactly like clicking −1 epoch down to this moment
+      const s = history[k];
+      history = history.slice(0, k);
+      applySnap(s);
+      buildTrainer(); // momentum memory would be stale after the rewind
+      setUndoDisabled(!history.length);
+    }
+    cv.style.cursor = '';
+    // a drag shouldn't double as a panel click (describe-card highlight)
+    if (moved) {
+      cv.addEventListener('click',
+        (e) => { e.stopPropagation(); e.preventDefault(); },
+        { capture: true, once: true });
+    }
+    requestRender();
+  };
+  cv.addEventListener('pointerup', endScrub);
+  cv.addEventListener('pointercancel', endScrub);
 }
 
 /* --- training, with a rewindable weight history --- */
@@ -282,14 +479,15 @@ function weightsRestore(snap) {
 function snapshot() {
   history.push({
     epoch: state.epoch, loss: state.loss,
-    hist: state.lossHist.slice(), weights: weightsSnapshot(),
+    hist: state.lossHist.slice(), curve: state.lossCurve.slice(),
+    weights: weightsSnapshot(),
   });
   if (history.length > HISTORY_CAP) history.shift();
   setUndoDisabled(false);
 }
 
 function setUndoDisabled(v) {
-  $('#backBtn').disabled = v;
+  $('#backBtn').disabled = v || state.playing;
   $('#passUndoBtn').disabled = v;
 }
 
@@ -315,6 +513,14 @@ function recordLoss(avloss, n) {
   state.lossHist.push(avloss);
   if (state.lossHist.length > 240) state.lossHist.shift();
   state.epoch += n;
+  // the timeline's loss trail spans the whole run, so it can't shift out old
+  // values the way lossHist does — decimate instead, keeping full-run coverage
+  state.lossCurve.push({ e: state.epoch, v: avloss });
+  if (state.lossCurve.length > 600) {
+    const last = state.lossCurve[state.lossCurve.length - 1];
+    state.lossCurve = state.lossCurve.filter((_, i) => i % 2 === 0);
+    if (state.lossCurve[state.lossCurve.length - 1] !== last) state.lossCurve.push(last);
+  }
 }
 
 function trainStep() {
@@ -341,6 +547,7 @@ function stepBack() {
   state.epoch = s.epoch;
   state.loss = s.loss;
   state.lossHist = s.hist;
+  state.lossCurve = s.curve;
   setUndoDisabled(!history.length);
   requestRender();
 }
@@ -355,20 +562,53 @@ const ICON_PAUSE = '<rect x="3" y="2" width="3.5" height="12" rx="1"/><rect x="9
 
 function setMode(m) {
   if (state.mode === m) return;
-  if (m === 'pass' && state.playing) setPlaying(false);
+  if (m !== 'epoch' && state.playing) setPlaying(false);
   state.mode = m;
   document.querySelectorAll('.mode-seg button').forEach((b) => {
     b.setAttribute('aria-pressed', String(b.dataset.mode === m));
   });
+  disarmPirep(); // a half-placed report doesn't survive a mode change
+  endTimelinePreview(); // previews belong to the mode they were opened in
   $('#panelControls').classList.toggle('pass-mode', m === 'pass');
+  $('#panelControls').classList.toggle('infer-mode', m === 'infer');
   document.querySelector('.viz').classList.toggle('passing', m === 'pass');
+  $('#describePane').dataset.mode = m; // Describe cards follow the visible panels
+  // the side panel follows the mode: inference opens the decision guide
+  $(m === 'infer' ? '#tabDecide' : '#tabIntro').click();
+  updateHeaderSwap();
+  clearPass(); // any running animation dies with the mode that owned it
   if (m === 'pass') {
     passIdleUI(); // wait for the Run button — nothing trains on mode entry
     updatePassRunUI();
-  } else {
-    clearPass();
+  } else if (m === 'infer') {
+    selectPoint(-1); // the point action bar belongs to the training data
+    inferIdleUI();
+    updateInferReadout();
   }
+  applyFeaturePanelLabels();
+  syncPassRowHeight();
   requestRender();
+}
+
+/* pass mode hides the feature panel — but that panel (canvas + legend + hint
+   chrome) is exactly what pins epoch mode's row height. Measure it off-flow at
+   epoch's column width and pin the pass row to the same height, so toggling
+   modes never moves the pipeline panel. Only meaningful in the wide 3-column
+   layout; the narrower breakpoints restack the panels entirely. */
+function syncPassRowHeight() {
+  const viz = document.querySelector('.viz');
+  if (state.mode !== 'pass' || !window.matchMedia('(min-width: 1521px)').matches) {
+    viz.style.removeProperty('--row-h');
+    return;
+  }
+  const feat = $('#panelFeature');
+  const colW = (viz.clientWidth - 32) / 2.72; // epoch's 1fr column width
+  const old = feat.getAttribute('style') || '';
+  feat.style.cssText =
+    `display:flex; visibility:hidden; position:absolute; width:${colW}px;`;
+  const h = feat.offsetHeight;
+  feat.setAttribute('style', old);
+  viz.style.setProperty('--row-h', h + 'px');
 }
 
 /* Run/Pause lifecycle for the pass animation */
@@ -377,11 +617,9 @@ function passRunToggle() {
   if (pass.timer) {
     clearInterval(pass.timer);
     pass.timer = null;              // freeze: phase chips become clickable
-  } else if (pass.si >= pass.steps.length - 1) {
-    startPass();                     // finished: Run starts another pass
-    return;
   } else {
-    pass.timer = setInterval(advancePass, PASS_STEP_MS); // resume
+    pass.timer = setInterval(advancePass, PASS_STEP_MS); // resume (rolls into
+    requestRender();                // the next epoch if paused on 'done')
   }
   updatePassRunUI();
 }
@@ -390,11 +628,25 @@ function updatePassRunUI() {
   const running = !!(pass && pass.timer);
   $('#passRunIcon').innerHTML = running ? ICON_PAUSE : ICON_PLAY;
   $('#passRunLabel').textContent = running ? 'Pause' : 'Run';
-  document.querySelectorAll('#passControls [data-phase]')
-    .forEach((b) => { b.disabled = running || !pass; });
+  $('#passControls').classList.toggle('pass-live', !!pass);
+  $('#passControls').classList.toggle('pass-paused', !!pass && !running);
+  updatePassStepUI();
 }
 
-function startPass() {
+/* the ±1 step pair mirrors epoch mode's ±1 epoch buttons: always visible,
+   disabled while the animation runs, relabelled at the pass's two ends */
+function updatePassStepUI() {
+  const back = $('#passStepBackBtn'), fwd = $('#passStepFwdBtn');
+  const usable = !!pass && !pass.timer && !pass.inference;
+  const atStart = !!pass && pass.si === 0;
+  const atEnd = !!pass && pass.si === pass.steps.length - 1;
+  back.textContent = atStart ? 'Prior epoch' : '−1 step';
+  fwd.textContent = atEnd ? 'Next epoch' : '+1 step';
+  back.disabled = !usable || (atStart && history.length < 2);
+  fwd.disabled = !usable;
+}
+
+function startPass(paused, atEnd) {
   if (state.playing || !data.length) return;
   clearPass();
   setRunActive(true);
@@ -444,9 +696,10 @@ function startPass() {
   steps.push({ phase: 'done' });
 
   pass = { p, steps, si: 0, acts, grads, deltaByLi, dmax, loss: stats.loss, timer: null };
+  if (atEnd) pass.si = steps.length - 1; // arriving from a backwards step
   updatePassUI();
   requestRender();
-  pass.timer = setInterval(advancePass, PASS_STEP_MS);
+  if (!paused) pass.timer = setInterval(advancePass, PASS_STEP_MS);
   updatePassRunUI();
 }
 
@@ -454,26 +707,68 @@ function advancePass() {
   if (!pass) return;
   if (pass.si < pass.steps.length - 1) {
     pass.si++;
-    updatePassUI();
+    if (pass.inference) updateInferUI(); else updatePassUI();
     requestRender();
+    return;
   }
-  if (pass.si >= pass.steps.length - 1 && pass.timer) {
+  if (pass.inference) {
+    // inference is one forward trip: arrive at the probabilities and stop
     clearInterval(pass.timer);
     pass.timer = null;
-    updatePassRunUI(); // animation finished: Run reappears, chips unlock
+    return;
+  }
+  // 'done' has been on screen for a beat — the run never stops on its own:
+  // fast-forward the rest of the epoch, then follow the same point again
+  rollPassEpoch();
+}
+
+/* complete the current epoch in the background (every other point trains once,
+   with the same batch-size-1 stepping the animated pass used), advance the
+   epoch counter and loss history, and start the next epoch's animated pass */
+function rollPassEpoch(paused) {
+  const tmp = new convnetjs.Trainer(net, {
+    learning_rate: state.lr, momentum: state.momentum,
+    batch_size: 1, l2_decay: state.l2,
+  });
+  const v = new convnetjs.Vol(1, 1, 2);
+  let sum = pass.loss; // the animated pass was this epoch's first sample
+  for (let i = 0; i < data.length; i++) {
+    if (i === pass.p) continue;
+    v.w[0] = data[i][0]; v.w[1] = data[i][1];
+    sum += tmp.train(v, labels[i]).loss;
+  }
+  recordLoss(sum / data.length, 1);
+  startPass(paused);
+}
+
+/* manual time travel while paused: ±1 animation step, crossing epoch
+   boundaries at either end (the chips are read-only progress indicators) */
+function passStepForward() {
+  if (!pass || pass.timer || pass.inference) return;
+  if (pass.si < pass.steps.length - 1) {
+    pass.si++;
+    updatePassUI();
+    requestRender();
+  } else {
+    rollPassEpoch(true); // "Next epoch": roll forward, stay paused at 'sample'
   }
 }
 
-function jumpPassPhase(phase) {
-  if (!pass) return;
-  const i = pass.steps.findIndex((s) => s.phase === phase);
-  if (i < 0) return;
-  pass.si = i;
-  updatePassUI();
-  requestRender();
-  clearInterval(pass.timer);
-  pass.timer = setInterval(advancePass, PASS_STEP_MS);
-  updatePassRunUI();
+function passStepBackward() {
+  if (!pass || pass.timer || pass.inference) return;
+  if (pass.si > 0) {
+    pass.si--;
+    updatePassUI();
+    requestRender();
+    return;
+  }
+  // "Prior epoch": rewind this pass's sample update AND the previous epoch,
+  // then replay that epoch's pass — deterministic, so it reconstructs exactly
+  // what was on screen — frozen at its final step
+  if (history.length < 2) return;
+  stepBack();
+  stepBack();
+  startPass(true, true);
 }
 
 function clearPass() {
@@ -481,6 +776,7 @@ function clearPass() {
   clearInterval(pass.timer);
   pass = null;
   if (state.mode === 'pass') passIdleUI();
+  if (state.mode === 'infer') inferIdleUI();
   updatePassRunUI();
   requestRender();
 }
@@ -489,16 +785,16 @@ function passIdleUI() {
   document.querySelectorAll('#passControls [data-phase]')
     .forEach((b) => b.classList.remove('on', 'done'));
   $('#passCaption').textContent =
-    'press Run to train once on the traced (gold) point and watch the pass unfold';
+    'press Run to follow the traced (gold) PIREP through training — one animated pass per epoch, the rest fast-forwarded — until you pause';
 }
 
 function passCaption(st) {
   const rows = archLayout();
   const p = pass.p;
-  const cls = labels[p] === DOG ? 'dog' : 'cat';
+  const cls = labels[p] === DOG ? 'ok (grade ≤ 3)' : 'rough (grade ≥ 4)';
   switch (st.phase) {
     case 'sample':
-      return `Following one training sample: (${fmt(data[p][0])}, ${fmt(data[p][1])}) — a ${cls}. Batch size is forced to 1, so this is exactly one pass through the net.`;
+      return `Following one PIREP: (${fmt(data[p][0])}, ${fmt(data[p][1])}) reported ${cls}. Batch size is forced to 1, so this is exactly one report through the net.`;
     case 'forward': {
       const r = rows[st.row];
       if (st.row === 0) return 'Forward · the sample’s two values enter the input layer.';
@@ -509,14 +805,15 @@ function passCaption(st) {
     }
     case 'loss': {
       const P = pass.acts[net.layers.length - 1][labels[p]];
-      return `Loss · the net says P(${cls}) = ${fmt(P)}; the truth is “${cls}”. Loss = −log(${fmt(P)}) = ${pass.loss.toFixed(3)} — the more right the net is, the smaller this gets.`;
+      const short = labels[p] === DOG ? 'ok' : 'rough';
+      return `Loss · the net says P(${short}) = ${fmt(P)}; the PIREP said “${short}”. Loss = −log(${fmt(P)}) = ${pass.loss.toFixed(3)} — the more right the net is, the smaller this gets.`;
     }
     case 'backward':
       return `Backward · the loss gradient flows back through ${rows[st.row].label} along the same weights — brighter violet = more responsibility for the error.`;
     case 'update':
       return `Update · every weight steps against its gradient (learning rate ${state.lr}): blue connections just got stronger, orange got weaker — thickness shows how much.`;
     default:
-      return 'Pass complete — the net learned a little from this one example. Click a chip to replay a phase, or run another pass and watch the loss on this sample shrink.';
+      return 'Pass complete — the rest of the epoch now fast-forwards in the background, then the next epoch follows this same point again. Pause any time to explore; undo pass rewinds a whole cycle.';
   }
 }
 
@@ -529,6 +826,93 @@ function updatePassUI() {
     b.classList.toggle('done', st.phase === 'done' || (si >= 0 && ci < si));
   });
   $('#passCaption').textContent = passCaption(st);
+  updatePassStepUI();
+}
+
+/* ---------------- inference mode: one input point, forward pass only ---------------- */
+let inferPt = [1.2, -0.8];
+
+function inferProbs() {
+  const v = new convnetjs.Vol(1, 1, 2);
+  v.w[0] = inferPt[0]; v.w[1] = inferPt[1];
+  return net.forward(v, false).w;
+}
+
+function updateInferReadout() {
+  const w = inferProbs();
+  $('#inferPtVal').textContent = `(${fmt(inferPt[0])}, ${fmt(inferPt[1])})`;
+  const ok = w[DOG] > w[CAT];
+  $('#inferOutVal').innerHTML =
+    `<b style="color:${C.dog}">P(ok) ${fmt(w[DOG])}</b> · ` +
+    `<b style="color:${C.cat}">P(rough) ${fmt(w[CAT])}</b> → ` +
+    `<b style="color:${ok ? C.dog : C.cat}">${ok ? 'stay on plan' : 'divert'}</b>`;
+}
+
+function inferIdleUI() {
+  $('#inferCaption').textContent =
+    'press Run to grade the waypoint — click anywhere on the map to move it along your route';
+}
+
+function inferCaption(st) {
+  switch (st.phase) {
+    case 'sample':
+      return `Waypoint (${fmt(inferPt[0])}, ${fmt(inferPt[1])}) enters the net — inference only: no loss, no gradients, no learning. Just the forward pass a deployed model runs.`;
+    case 'forward':
+      return passCaption(st); // the forward story is identical to training's
+    default: {
+      const w = pass.acts[net.layers.length - 1];
+      const ok = w[DOG] > w[CAT];
+      return `Done · P(ok) = ${fmt(w[DOG])}, P(rough) = ${fmt(w[CAT])} — the net grades this waypoint ${ok ? 'moderate turbulence at worst: stay on plan' : 'moderate chop or worse: divert around it'}. Move the waypoint or press Run to replay.`;
+    }
+  }
+}
+
+function updateInferUI() {
+  $('#inferCaption').textContent = inferCaption(pass.steps[pass.si]);
+}
+
+/* animate the forward pass on the inference point — no trainer involved */
+function startInferRun() {
+  clearPass();
+  const acts = (inferProbs(), net.layers.map((L) => Float64Array.from(L.out_act.w)));
+  const rows = archLayout();
+  const steps = [{ phase: 'sample' }];
+  rows.forEach((r, ri) => {
+    if (ri === 0) steps.push({ phase: 'forward', row: 0, stage: 'lin' });
+    else {
+      steps.push({ phase: 'forward', row: ri, stage: 'lin' });
+      if (r.side) steps.push({ phase: 'forward', row: ri, stage: 'act' });
+    }
+  });
+  steps.push({ phase: 'done' });
+  pass = {
+    p: 0, steps, si: 0, acts, grads: null, deltaByLi: {}, dmax: 1e-9,
+    loss: 0, timer: null, inference: true,
+  };
+  updateInferUI();
+  requestRender();
+  pass.timer = setInterval(advancePass, PASS_STEP_MS);
+}
+
+/* the feature panel doubles as the inference input plane */
+const FEAT_TITLE = {
+  epoch: ['Airspace map (feature space)',
+    'Every PIREP filed so far, plotted by position (km east, km north). In ATC view, every region shows the ride the net would currently forecast there.'],
+  infer: ['Next waypoint',
+    'One point on your route ahead. Click anywhere to move it; the forecast readout and the gold trace through every diagram follow instantly.'],
+};
+
+function applyFeaturePanelLabels() {
+  const inf = state.mode === 'infer';
+  const [title, tip] = FEAT_TITLE[inf ? 'infer' : 'epoch'];
+  const h2 = document.querySelector('#panelFeature h2');
+  h2.textContent = title;
+  h2.setAttribute('data-tip', tip);
+  document.querySelector('#panelFeature .legend').style.display = inf ? 'none' : '';
+  $('#pirepAdders').hidden = inf || selectedPt >= 0;
+  $('#featInstr').innerHTML = inf
+    ? 'click anywhere to move the <b style="color:#c98500">waypoint</b> — the forecast updates live'
+    : 'click a data point to tag it';
 }
 
 function passRowEmph(ri, n, ps) {
@@ -574,7 +958,7 @@ function describeLayers() {
             expl: 'Weights rotate, scale and shear the grid; the bias slides it around. Straight lines stay straight.' };
     } else if (t === 'softmax') {
       e = { short: 'softmax', title: 'Output · softmax probabilities',
-            expl: 'Scores become probabilities that sum to 1. Points past the diagonal are called dogs.' };
+            expl: 'Scores become probabilities that sum to 1. PIREPs past the diagonal grade as ok air.' };
     } else {
       e = { short: t + sub(h), title: `Hidden layer ${h} · ${t}`,
             expl: ACT_EXPL[t] || '' };
@@ -588,7 +972,7 @@ function describeLayers() {
 function axisLabels() {
   const t = net.layers[state.lix].layer_type;
   if (t === 'input') return { x: 'x₁', y: 'x₂' };
-  if (t === 'softmax') return { x: 'P(cat)', y: 'P(dog)' };
+  if (t === 'softmax') return { x: 'P(rough)', y: 'P(ok)' };
   return { x: 'neuron ' + state.d0, y: 'neuron ' + state.d1 };
 }
 
@@ -630,15 +1014,28 @@ function computeField(S) {
       }
     }
   }
+  const infer = state.mode === 'infer';
   for (let i = 0; i < data.length; i++) {
     v.w[0] = data[i][0]; v.w[1] = data[i][1];
     net.forward(v, false);
     for (let li = 0; li < nL; li++) {
       const w = net.layers[li].out_act.w;
-      f.pts[li].push({ x: w[0], y: w.length > 1 ? w[1] : 0, lab: labels[i], tag: tagged[i] });
+      f.pts[li].push({ x: w[0], y: w.length > 1 ? w[1] : 0, lab: labels[i], tag: !infer && tagged[i] });
     }
     const ws = net.layers[state.lix].out_act.w;
-    f.selPts.push({ x: ws[state.d0], y: ws[state.d1], lab: labels[i], tag: tagged[i] });
+    f.selPts.push({ x: ws[state.d0], y: ws[state.d1], lab: labels[i], tag: !infer && tagged[i] });
+  }
+  if (infer) {
+    // the inference point rides through every diagram as the (only) gold trace
+    v.w[0] = inferPt[0]; v.w[1] = inferPt[1];
+    const a = net.forward(v, false);
+    const lab = a.w[DOG] > a.w[CAT] ? DOG : CAT;
+    for (let li = 0; li < nL; li++) {
+      const w = net.layers[li].out_act.w;
+      f.pts[li].push({ x: w[0], y: w.length > 1 ? w[1] : 0, lab, tag: true });
+    }
+    const ws = net.layers[state.lix].out_act.w;
+    f.selPts.push({ x: ws[state.d0], y: ws[state.d1], lab, tag: true });
   }
   return f;
 }
@@ -790,7 +1187,7 @@ function render() {
   drawArch();
   drawMinis(field);
   drawSpark();
-  if (runActive) drawTimeline();
+  if (timelineShown()) drawTimeline();
   $('#lossVal').textContent = state.loss == null ? '—' : state.loss.toFixed(4);
   $('#epochVal').textContent = state.epoch.toLocaleString();
 }
@@ -849,10 +1246,35 @@ function drawFeature({ ctx, w: S }, f) {
   ctx.fillText('x₁ →', S - 38, S / 2 - 8);
   ctx.fillText('x₂', S / 2 + 8, 16);
 
+  if (state.mode === 'infer') {
+    // one gold input point with a crosshair — no training data on this plane
+    const px = S / 2 + inferPt[0] * f.ss, py = S / 2 + inferPt[1] * f.ss;
+    ctx.strokeStyle = 'rgba(201, 133, 0, 0.5)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    ctx.moveTo(px, 0); ctx.lineTo(px, S);
+    ctx.moveTo(0, py); ctx.lineTo(S, py);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    drawDot(ctx, px, py, 6.5, { lab: DOG, tag: true });
+    return;
+  }
+
   for (let i = 0; i < data.length; i++) {
+    if (reveal && !reveal.shown.has(i)) continue; // this report isn't in yet
     drawDot(ctx, S / 2 + data[i][0] * f.ss, S / 2 + data[i][1] * f.ss, 5,
       { lab: labels[i], tag: tagged[i] });
   }
+
+  // freshly-filed PIREPs wear their tail number + grade for a moment
+  ctx.font = '600 10px ui-monospace, Menlo, monospace';
+  for (const p of pendingPireps) {
+    const px = S / 2 + p.x * f.ss, py = S / 2 + p.y * f.ss;
+    ctx.fillStyle = p.lab === DOG ? C.dog : C.cat;
+    ctx.fillText(p.text, Math.min(Math.max(px + 9, 4), S - 82), py < 20 ? py + 19 : py - 9);
+  }
+  ctx.font = MONO;
 
   // ring the point whose action bar is open
   if (selectedPt >= 0 && selectedPt < data.length) {
@@ -896,8 +1318,14 @@ function drawSelected({ ctx, w: S }, f) {
 const fmt = (v) => (Object.is(v, -0) ? 0 : v).toFixed(2);
 
 function probeIndex() {
+  if (state.mode === 'infer') return 0; // virtual: probePt() supplies the point
   const t = tagged.findIndex(Boolean);
   return t >= 0 ? t : (data.length ? 0 : -1);
+}
+
+/* the coordinates behind a probe index — the inference point in infer mode */
+function probePt(p) {
+  return state.mode === 'infer' ? inferPt : data[p];
 }
 
 function outActOf(row) {
@@ -905,22 +1333,32 @@ function outActOf(row) {
 }
 
 function forwardProbe(p) {
+  const pt = probePt(p);
   const v = new convnetjs.Vol(1, 1, 2);
-  v.w[0] = data[p][0];
-  v.w[1] = data[p][1];
+  v.w[0] = pt[0];
+  v.w[1] = pt[1];
   net.forward(v, false);
 }
 
 function drawProbeCaption(ctx, S, p) {
   ctx.font = MONO;
   ctx.textAlign = 'left';
+  if (state.mode === 'infer') {
+    ctx.fillStyle = C.tag;
+    ctx.beginPath();
+    ctx.arc(16, 17, 4.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = C.muted;
+    ctx.fillText(`waypoint (${fmt(inferPt[0])}, ${fmt(inferPt[1])})`, 26, 21);
+    return;
+  }
   ctx.fillStyle = labels[p] === DOG ? C.dog : C.cat;
   ctx.beginPath();
   ctx.arc(16, 17, 4.5, 0, Math.PI * 2);
   ctx.fill();
   ctx.fillStyle = C.muted;
   ctx.fillText(
-    `tracing point (${fmt(data[p][0])}, ${fmt(data[p][1])}) · ${labels[p] === DOG ? 'dog' : 'cat'}`, 26, 21);
+    `tracing PIREP (${fmt(data[p][0])}, ${fmt(data[p][1])}) · ${labels[p] === DOG ? 'ok' : 'rough'}`, 26, 21);
 }
 
 function centerText(ctx, S, msg) {
@@ -1151,7 +1589,7 @@ function drawNodeDetail(ctx, S) {
   } else {
     ctx.fillStyle = j === DOG ? C.dog : C.cat;
     ctx.font = '12px ui-monospace, Menlo, monospace';
-    ctx.fillText(`P(${j === CAT ? 'cat' : 'dog'}) = ${fmt(a)}`, xAct + 54, mid + 4);
+    ctx.fillText(`P(${j === CAT ? 'rough' : 'ok'}) = ${fmt(a)}`, xAct + 54, mid + 4);
   }
 
   drawCalcLines(ctx, S, weights, inputs, bias, z);
@@ -1418,7 +1856,7 @@ function drawArch() {
       if (probe >= 0) {
         const val = ps
           ? pass.acts[row.fcIdx != null ? row.fcIdx : 0][j]
-          : (row.fcIdx != null ? net.layers[row.fcIdx].out_act.w[j] : data[probe][j]);
+          : (row.fcIdx != null ? net.layers[row.fcIdx].out_act.w[j] : probePt(probe)[j]);
         ctx.fillStyle = C.ink;
         ctx.font = VAL_FONT;
         ctx.textAlign = 'center';
@@ -1469,7 +1907,7 @@ function drawArch() {
         ctx.textAlign = 'center';
         for (let j = 0; j < row.count; j++) {
           ctx.fillStyle = j === DOG ? C.dog : C.cat;
-          ctx.fillText(`P(${j === CAT ? 'cat' : 'dog'})`, nodeX(row, j), yA + actBox / 2 + 14);
+          ctx.fillText(`P(${j === CAT ? 'rough' : 'ok'})`, nodeX(row, j), yA + actBox / 2 + 14);
         }
         ctx.textAlign = 'left';
         ctx.font = MONO;
@@ -1567,19 +2005,49 @@ function drawSpark() {
 function requestRender() { needsRender = true; }
 
 /* ---------------- pipeline strip ---------------- */
+/* tiny activation glyphs for the connector chips: axes + curve + a gold dot
+   at the origin, echoing the node-detail diagrams */
+const ACT_ICON = {
+  relu:    { axes: 'M10 1 V15 M2 12 H18', curve: 'M2 12 H10 L18 3',       dot: [10, 12] },
+  tanh:    { axes: 'M10 1 V15 M2 8 H18',  curve: 'M2 14 C8 14 12 2 18 2', dot: [10, 8] },
+  sigmoid: { axes: 'M10 1 V15 M2 8 H18',  curve: 'M2 13 C8 13 12 3 18 3', dot: [10, 8] },
+};
+
+/* the chip between mini i−1 and mini i names the operation that produced i */
+function pipeOpEl(prev, inf) {
+  const el = document.createElement('span');
+  el.className = 'pipe-op';
+  el.setAttribute('aria-hidden', 'true');
+  if (inf.type === 'fc' && prev.type === 'input') {
+    el.textContent = '(x₁, x₂)';
+    el.setAttribute('data-tip', 'The raw input — a position (km east, km north) flowing into the first layer of weighted sums.');
+  } else if (inf.type === 'fc') {
+    el.textContent = 'Σ w·x + b';
+    el.setAttribute('data-tip', 'Linear step: each neuron takes a weighted sum of the previous layer’s outputs, plus its bias.');
+  } else if (inf.type === 'softmax') {
+    el.textContent = 'eᶻ / Σeᶻ';
+    el.setAttribute('data-tip', 'Softmax: exponentiate the class scores and normalize, turning them into probabilities that sum to 1.');
+  } else {
+    const ic = ACT_ICON[inf.type] || ACT_ICON.relu;
+    el.innerHTML =
+      `<svg viewBox="0 0 20 16" width="20" height="16" fill="none" stroke="currentColor" `
+      + `stroke-linecap="round" stroke-linejoin="round">`
+      + `<path d="${ic.axes}" stroke-width="1" opacity="0.35"/>`
+      + `<path d="${ic.curve}" stroke-width="1.6"/>`
+      + `<circle cx="${ic.dot[0]}" cy="${ic.dot[1]}" r="2" fill="#c98500" stroke="none"/>`
+      + `</svg>${inf.type}`;
+    el.setAttribute('data-tip', `Activation: ${inf.type} bends each neuron’s weighted sum — this is where the non-linearity enters.`);
+  }
+  return el;
+}
+
 function buildPipeline() {
   const host = $('#pipeline');
   host.innerHTML = '';
   minis = [];
   const info = describeLayers();
   info.forEach((inf, i) => {
-    if (i > 0) {
-      const a = document.createElement('span');
-      a.className = 'pipe-arrow';
-      a.textContent = '→';
-      a.setAttribute('aria-hidden', 'true');
-      host.appendChild(a);
-    }
+    if (i > 0) host.appendChild(pipeOpEl(info[i - 1], inf));
     const item = document.createElement('button');
     item.type = 'button';
     item.className = 'pipe-item';
@@ -1635,7 +2103,7 @@ function updateSelectionUI() {
       title = `input · x${sub(v.j + 1)}`;
       expl = 'One raw input feature of the traced point. It fans out to every neuron in the first layer, each scaling it with its own learned weight.';
     } else if (row.label === 'output') {
-      title = `output · ${v.j === CAT ? 'cat' : 'dog'} score`;
+      title = `output · ${v.j === CAT ? 'rough' : 'ok'} score`;
       expl = 'A class-score neuron: it sums weighted evidence from the layer before, and softmax turns the two scores into probabilities that sum to 1.';
     } else {
       title = `${row.label} · neuron ${v.j}`;
@@ -1735,19 +2203,111 @@ function pointAt(xt, yt, ss) {
 
 function selectPoint(k) {
   selectedPt = k;
-  const bar = $('#ptActions'), instr = $('#featInstr');
+  const bar = $('#ptActions'), instr = $('#featInstr'), adders = $('#pirepAdders');
   if (k < 0 || k >= data.length) {
     selectedPt = -1;
     bar.hidden = true;
     instr.hidden = false;
+    adders.hidden = state.mode === 'infer';
     return;
   }
   bar.hidden = false;
   instr.hidden = true;
+  adders.hidden = true;
   $('#ptLabel').textContent =
-    `${labels[k] === DOG ? 'dog' : 'cat'} (${fmt(data[k][0])}, ${fmt(data[k][1])})`;
-  $('#btnClass').textContent = `make it a ${labels[k] === DOG ? 'cat' : 'dog'}`;
+    `${labels[k] === DOG ? 'ok' : 'rough'} PIREP (${fmt(data[k][0])}, ${fmt(data[k][1])})`;
   $('#btnTag').textContent = tagged[k] ? 'untag' : 'tag to trace';
+}
+
+/* new PIREPs land like radio calls: tail number + grade first, then the label
+   fades and only the colored dot remains (mirrors the intro video) */
+let pendingPireps = []; // { x, y, lab, text }
+
+/* weather-change animation: the fresh dataset's reports arrive one at a time,
+   in random order, each announcing its tail number + grade before settling
+   into a dot — the intro video played out on the real airspace map */
+let reveal = null; // { shown: Set<index>, timer } while arriving
+
+function clearDataReveal() {
+  if (!reveal) return;
+  clearInterval(reveal.timer);
+  reveal = null;
+  pendingPireps = [];
+  requestRender();
+}
+
+function animateDataArrival() {
+  clearDataReveal();
+  if (!data.length) return;
+  const order = data.map((_, i) => i);
+  for (let i = order.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [order[i], order[j]] = [order[j], order[i]];
+  }
+  let k = 0;
+  reveal = { shown: new Set(), timer: null };
+  // ~4.5 s total whatever the dataset size; with dense datasets only a
+  // sample of reports get the tail-number callout (as in the intro video —
+  // labelling all 200 would just be noise)
+  const step = Math.max(18, Math.min(160, 4500 / order.length));
+  const labelEvery = Math.max(1, Math.ceil(order.length / 28));
+  reveal.timer = setInterval(() => {
+    const i = order[k++];
+    reveal.shown.add(i);
+    if (k % labelEvery === 0 || order.length <= 28) {
+      const grade = (labels[i] === DOG ? 1 : 4) + Math.floor(Math.random() * 3);
+      const entry = { x: data[i][0], y: data[i][1], lab: labels[i], text: `${randTail()} · ${grade}` };
+      pendingPireps.push(entry);
+      setTimeout(() => {
+        pendingPireps = pendingPireps.filter((e) => e !== entry);
+        requestRender();
+      }, 1250);
+    }
+    if (k >= order.length) {
+      clearInterval(reveal.timer);
+      reveal = null; // all reports in; the last labels fade on their own
+    }
+    requestRender();
+  }, step);
+}
+
+function addPirep(cls, x, y) {
+  if (x == null) { // the random chip drops its report anywhere
+    x = (Math.random() * 2 - 1) * 4.6;
+    y = (Math.random() * 2 - 1) * 4.6;
+  }
+  const lab = cls == null ? (Math.random() < 0.5 ? DOG : CAT) : cls;
+  data.push([x, y]);
+  labels.push(lab);
+  tagged.push(false);
+  if (reveal) reveal.shown.add(data.length - 1); // a hand-filed report lands at once
+  const grade = (lab === DOG ? 1 : 4) + Math.floor(Math.random() * 3);
+  const entry = { x, y, lab, text: `${randTail()} · ${grade}` };
+  pendingPireps.push(entry);
+  setTimeout(() => {
+    pendingPireps = pendingPireps.filter((e) => e !== entry);
+    requestRender();
+  }, 1400);
+  requestRender();
+}
+
+/* ok / rough chips arm a placement: crosshair cursor + blinking chip until the
+   user clicks the map to drop the report there */
+let armedPirep = null; // DOG | CAT | null
+
+function armPirep(cls, btn) {
+  const rearm = armedPirep !== cls;
+  disarmPirep();
+  if (!rearm) return; // clicking the armed chip again cancels
+  armedPirep = cls;
+  document.body.classList.add('placing');
+  btn.classList.add('arming');
+}
+
+function disarmPirep() {
+  armedPirep = null;
+  document.body.classList.remove('placing');
+  document.querySelectorAll('.pirep-add.arming').forEach((b) => b.classList.remove('arming'));
 }
 
 function onCanvasEdit(e) {
@@ -1755,15 +2315,20 @@ function onCanvasEdit(e) {
   const ss = S / 10.4;
   const xt = (e.offsetX - S / 2) / ss;
   const yt = (e.offsetY - S / 2) / ss;
-  const k = pointAt(xt, yt, ss);
-  if (k >= 0) {
-    selectPoint(k);
-  } else {
-    data.push([xt, yt]);
-    labels.push(DOG);
-    tagged.push(false);
-    selectPoint(-1);
+  if (state.mode === 'infer') {
+    inferPt = [xt, yt];
+    clearPass(); // a moved point invalidates the running animation
+    updateInferReadout();
+    requestRender();
+    return;
   }
+  if (armedPirep != null) {
+    addPirep(armedPirep, xt, yt); // the armed report lands where you click
+    disarmPirep();
+    return;
+  }
+  // otherwise clicks only select existing PIREPs
+  selectPoint(pointAt(xt, yt, ss));
   requestRender();
 }
 
@@ -1774,20 +2339,30 @@ function setPlaying(on) {
     setRunActive(true);
   }
   state.playing = on;
-  $('#stepBtn').hidden = on;
-  $('#backBtn').hidden = on;
+  // ±1 epoch stay visible so nothing shifts; they only work while paused
+  $('#stepBtn').disabled = on;
+  setUndoDisabled(!history.length);
   const btn = $('#playBtn');
   btn.setAttribute('aria-pressed', String(on));
   $('#playIcon').innerHTML = on ? ICON_PAUSE : ICON_PLAY;
-  $('#playLabel').textContent = on ? 'Pause' : 'Train';
+  updatePlayLabel();
+  applyRunLocks(); // pausing freezes the rate sliders too
+}
+
+/* "Train" only while no run is active (fresh weights); once the train has left
+   the station a pause reads "Resume" until Reset weights */
+function updatePlayLabel() {
+  $('#playLabel').textContent = state.playing ? 'Pause' : (runActive ? 'Resume' : 'Train');
 }
 
 /* ---------------- side panel: tabs + background-click highlighting ---------------- */
 function initSidePanel() {
   const tabs = [
+    ['tabIntro', 'introPane'],
     ['tabDescribe', 'describePane'],
     ['tabExplore', 'explorePane'],
     ['tabDelve', 'delvePane'],
+    ['tabDecide', 'decidePane'],
   ];
   const activate = (name) => {
     tabs.forEach(([t, p]) => {
@@ -1798,27 +2373,323 @@ function initSidePanel() {
   };
   tabs.forEach(([t]) => $('#' + t).addEventListener('click', () => activate(t)));
 
+  // Next chips walk the tabs in order (Decide wraps back to Intro), each
+  // landing at the top of the next pane
+  document.querySelectorAll('.side-next .next-chip').forEach((b) => {
+    b.addEventListener('click', () => {
+      $('#' + b.dataset.next).click();
+      const pane = tabs.find(([t]) => t === b.dataset.next)[1];
+      $('#' + pane).scrollTop = 0;
+    });
+  });
+
   // clicking a panel's non-interactive background highlights its Describe card
+  // (and flashes the panel itself); Controls/Network map to their pass-mode
+  // cards while in single-pass mode
   let hlTimer = null;
+  let panelTimer = null;
   const MAP = {
-    panelControls: 'desc-controls',
-    panelFeature: 'desc-feature',
-    panelNetwork: 'desc-network',
-    panelDetail: 'desc-detail',
-    panelPipeline: 'desc-pipeline',
+    panelControls: () => (state.mode === 'pass' ? 'desc-pass-controls'
+      : state.mode === 'infer' ? 'desc-infer' : 'desc-controls'),
+    panelFeature: () => (state.mode === 'infer' ? 'desc-infer' : 'desc-feature'),
+    panelNetwork: () => (state.mode === 'pass' ? 'desc-pass-network' : 'desc-network'),
+    panelDetail: () => 'desc-detail',
+    panelPipeline: () => 'desc-pipeline',
+    timeline: () => 'desc-timeline',
   };
-  for (const [secId, cardId] of Object.entries(MAP)) {
-    document.getElementById(secId).addEventListener('click', (e) => {
-      if (e.target.closest('button, canvas, select, input, label, a')) return;
+  for (const [secId, cardIdOf] of Object.entries(MAP)) {
+    const sec = document.getElementById(secId);
+    sec.addEventListener('click', (e) => {
+      // the timeline's canvas is pure display, so it doesn't block the lookup
+      if (secId !== 'timeline'
+        && e.target.closest('button, canvas, select, input, label, a')) return;
       activate('tabDescribe');
-      const card = document.getElementById(cardId);
+      const card = document.getElementById(cardIdOf());
+      if (card.id !== 'desc-timeline') endTimelinePreview();
       document.querySelectorAll('.side-card.hl').forEach((c) => c.classList.remove('hl'));
       card.classList.add('hl');
       card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
       clearTimeout(hlTimer);
       hlTimer = setTimeout(() => card.classList.remove('hl'), 2600);
+      document.querySelectorAll('.hl-panel').forEach((p) => p.classList.remove('hl-panel'));
+      sec.classList.add('hl-panel');
+      clearTimeout(panelTimer);
+      panelTimer = setTimeout(() => sec.classList.remove('hl-panel'), 2600);
     });
   }
+
+  // …and the reverse: clicking a Describe card flashes the page panel(s) it
+  // documents. Mode scoping already hides any card whose panel is off screen,
+  // so the static map stays truthful; desc-infer covers two panels because the
+  // forward map sends both there in inference mode.
+  const RMAP = {
+    'desc-controls': ['panelControls'],
+    'desc-pass-controls': ['panelControls'],
+    'desc-infer': ['panelControls', 'panelFeature'],
+    'desc-timeline': ['timeline'],
+    'desc-feature': ['panelFeature'],
+    'desc-pass-network': ['panelNetwork'],
+    'desc-network': ['panelNetwork'],
+    'desc-detail': ['panelDetail'],
+    'desc-pipeline': ['panelPipeline'],
+  };
+  for (const [cardId, secIds] of Object.entries(RMAP)) {
+    const card = document.getElementById(cardId);
+    card.addEventListener('click', (e) => {
+      if (e.target.closest('a, button')) return;
+      // unique case: with no run on screen, the timeline card toggles a live
+      // preview of the timeline in the title's place. Clicking the selected
+      // card again deselects it and the title returns (unless a run has since
+      // made the timeline permanent — updateHeaderSwap re-applies the rules).
+      if (cardId === 'desc-timeline' && timelinePreview) {
+        endTimelinePreview();
+        document.querySelectorAll('.hl-panel').forEach((p) => p.classList.remove('hl-panel'));
+        return;
+      }
+      const previewing = cardId === 'desc-timeline' && !timelineShown();
+      if (previewing) {
+        timelinePreview = true;
+        updateHeaderSwap();
+        requestRender();
+      } else if (cardId !== 'desc-timeline') {
+        endTimelinePreview();
+      }
+      document.querySelectorAll('.side-card.hl').forEach((c) => c.classList.remove('hl'));
+      card.classList.add('hl');
+      clearTimeout(hlTimer);
+      // a previewing card stays selected until explicitly deselected
+      if (!previewing) hlTimer = setTimeout(() => card.classList.remove('hl'), 2600);
+      document.querySelectorAll('.hl-panel').forEach((p) => p.classList.remove('hl-panel'));
+      let scrolled = false;
+      for (const sid of secIds) {
+        const sec = document.getElementById(sid);
+        // the timeline only exists on screen while a run (or preview) shows it
+        if (sid === 'timeline' && sec.classList.contains('swapped-out')) continue;
+        sec.classList.add('hl-panel');
+        if (!scrolled) {
+          sec.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+          scrolled = true;
+        }
+      }
+      clearTimeout(panelTimer);
+      panelTimer = setTimeout(() => {
+        document.querySelectorAll('.hl-panel').forEach((p) => p.classList.remove('hl-panel'));
+      }, 2600);
+    });
+  }
+
+  // every other card — Intro, Explore, Delve, Decide — is clickable too, even
+  // with no page panel to point at: the click just moves the highlight there
+  const wired = new Set(Object.keys(RMAP));
+  document.querySelectorAll('.side-card').forEach((card) => {
+    if (wired.has(card.id)) return;
+    card.addEventListener('click', (e) => {
+      if (e.target.closest('a, button')) return;
+      endTimelinePreview();
+      document.querySelectorAll('.side-card.hl').forEach((c) => c.classList.remove('hl'));
+      document.querySelectorAll('.hl-panel').forEach((p) => p.classList.remove('hl-panel'));
+      card.classList.add('hl');
+      clearTimeout(hlTimer);
+      hlTimer = setTimeout(() => card.classList.remove('hl'), 2600);
+    });
+  });
+}
+
+/* ---------------- one-off welcome "video" modal ---------------- */
+/* PIREPs arrive over time: tail number + grade flash up, then settle into the
+   colored dot the feature space will show from then on. Decorative, so
+   Math.random is fine. */
+let modalTimers = [];
+const mt = (fn, ms) => modalTimers.push(setTimeout(fn, ms));
+function clearModalTimers() { modalTimers.forEach(clearTimeout); modalTimers = []; }
+
+function buildModalScene() {
+  clearModalTimers();
+  const svg = $('#modalNet');
+  const NS = 'http://www.w3.org/2000/svg';
+  const W = 580, H = 260;
+  let grid = '';
+  for (let x = 20; x < W; x += 40) grid += `M${x} 0V${H}`;
+  for (let y = 20; y < H; y += 40) grid += `M0 ${y}H${W}`;
+  svg.innerHTML = `<path d="${grid}" stroke="#2c2c2a" stroke-width="1" fill="none" opacity="0.55"/>`;
+
+  // two interleaved spiral bands of reports — the cyclone dataset in miniature
+  const cx = W / 2, cy = H / 2 - 10;
+  const pts = [];
+  for (let k = 0; k < 9; k++) {
+    const t = 0.55 + k * 0.42, r = 13 + k * 10.5;
+    pts.push({ x: cx + r * Math.cos(t) * 1.65, y: cy + r * Math.sin(t) * 0.72,
+      ok: false, g: 4 + (k % 3) });
+    pts.push({ x: cx + r * Math.cos(t + Math.PI) * 1.65, y: cy + r * Math.sin(t + Math.PI) * 0.72,
+      ok: true, g: 1 + (k % 3) });
+  }
+  // position-only calls with no ride value ("· –") scattered anywhere: once
+  // every echo is grey, they bury the spiral in what reads as random traffic
+  for (let k = 0; k < 12; k++) {
+    pts.push({ x: 26 + Math.random() * (W - 52), y: 14 + Math.random() * (H - 62), g: null });
+  }
+  // shuffle so graded and ungraded calls interleave
+  for (let i = pts.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pts[i], pts[j]] = [pts[j], pts[i]];
+  }
+  const addPt = (p) => {
+    const col = p.g == null ? '#898781' : p.ok ? C.dog : C.cat;
+    const dot = document.createElementNS(NS, 'circle');
+    dot.setAttribute('cx', p.x); dot.setAttribute('cy', p.y);
+    dot.setAttribute('r', 5.5);
+    dot.setAttribute('fill', col);
+    svg.appendChild(dot);
+    const t = document.createElementNS(NS, 'text');
+    t.textContent = `${randTail()} · ${p.g == null ? '–' : p.g}`;
+    t.setAttribute('x', Math.min(Math.max(p.x + 8, 6), W - 70));
+    t.setAttribute('y', p.y < 20 ? p.y + 17 : p.y - 8);
+    t.setAttribute('fill', col);
+    t.setAttribute('font-size', '9.5');
+    t.setAttribute('font-family', 'ui-monospace,Menlo,monospace');
+    t.setAttribute('font-weight', '600');
+    svg.appendChild(t);
+    // the echo goes grey: pilots hear the report, but they don't keep a map —
+    // hiding the pattern is what makes "should it divert?" a real question
+    mt(() => { t.remove(); dot.setAttribute('r', 4); dot.setAttribute('fill', '#6e6c66'); }, 1050);
+  };
+
+  const finale = () => {
+    const route = document.createElementNS(NS, 'path');
+    route.setAttribute('d', `M-8 232 C 150 212, 230 158, ${cx} ${cy} S 470 62, 588 44`);
+    route.setAttribute('stroke', C.tag);
+    route.setAttribute('stroke-width', '1.6');
+    route.setAttribute('stroke-dasharray', '6 5');
+    route.setAttribute('fill', 'none');
+    svg.appendChild(route);
+    const plane = document.createElementNS(NS, 'path');
+    plane.setAttribute('d', 'M0 -10 L2.2 -3 L11 3 L11 5.5 L2.2 3 L1.6 8.5 L5 11 L5 13 '
+      + 'L0 11.6 L-5 13 L-5 11 L-1.6 8.5 L-2.2 3 L-11 5.5 L-11 3 L-2.2 -3 Z');
+    plane.setAttribute('fill', '#e8e6dc');
+    plane.setAttribute('transform', 'translate(30 226) rotate(83)');
+    svg.appendChild(plane);
+    const q = document.createElementNS(NS, 'text');
+    q.textContent = 'should it divert — and if so, how?';
+    q.setAttribute('x', W / 2); q.setAttribute('y', 251);
+    q.setAttribute('text-anchor', 'middle');
+    q.setAttribute('fill', C.tag);
+    q.setAttribute('font-size', '11');
+    q.setAttribute('font-family', 'ui-monospace,Menlo,monospace');
+    q.setAttribute('font-weight', '700');
+    svg.appendChild(q);
+  };
+
+  // no reduced-motion fallback: this only ever plays on first load or after an
+  // explicit "replay video" click, so the viewer has opted into the animation
+  pts.forEach((p, i) => mt(() => addPt(p), 350 + i * 210));
+  mt(finale, 350 + pts.length * 210 + 750);
+}
+
+function randTail() {
+  return 'N' + (100 + Math.floor(Math.random() * 900))
+    + String.fromCharCode(65 + Math.floor(Math.random() * 26))
+    + String.fromCharCode(65 + Math.floor(Math.random() * 26));
+}
+
+function dismissModal(followUp) {
+  $('#introModal').classList.add('dismissed');
+  clearModalTimers();
+  // the follow-up (start training, highlight the intro, ...) waits until the
+  // full-screen switch has played out, so it isn't competing for the eye
+  fsAttention(followUp);
+}
+
+function showModal() {
+  $('#introModal').classList.remove('dismissed');
+  buildModalScene();
+  $('#modalClose').focus();
+}
+
+function initModal() {
+  // every exit lands on the Intro tab with "What you're looking at" spotlit;
+  // the Train button additionally sets the run going
+  const introSpotlight = () => {
+    $('#tabIntro').click();
+    const card = document.getElementById('intro-what');
+    card.classList.add('hl');
+    card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    setTimeout(() => card.classList.remove('hl'), 2600);
+  };
+  $('#modalClose').addEventListener('click', () => dismissModal(introSpotlight));
+  $('#modalTrain').addEventListener('click', () => {
+    dismissModal(() => { introSpotlight(); setPlaying(true); });
+  });
+  $('#modalIntro').addEventListener('click', () => dismissModal(introSpotlight));
+  // no backdrop or Esc dismissal: leaving the modal is an explicit choice
+  // (✕, Train, or Intro)
+  $('#replayBtn').addEventListener('click', showModal);
+  showModal();
+}
+
+/* ---------------- full-screen banner ---------------- */
+const ICON_EXPAND =
+  '<path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/>'
+  + '<path d="M2 2l4 4M14 2l-4 4M14 14l-4-4M2 14l4-4"/>';
+const ICON_COMPRESS =
+  '<path d="M6 2v4H2M10 2v4h4M14 10h-4v4M2 10h4v4"/>'
+  + '<path d="M6 6L2 2M10 6l4-4M10 10l4 4M6 10l-4 4"/>';
+
+function initFullscreen() {
+  const sync = () => {
+    const fs = !!document.fullscreenElement;
+    $('#fsLabel').textContent = fs
+      ? 'full screen — click here (or press esc) to exit'
+      : 'switching to full screen to give the best experience';
+    const icon = fs ? ICON_COMPRESS : ICON_EXPAND;
+    $('#fsIcon').innerHTML = icon;
+    $('#fsIconTop').innerHTML = icon;
+  };
+  const toggle = () => {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else document.documentElement.requestFullscreen().catch(() => {});
+  };
+  $('#fsBar').addEventListener('click', toggle);
+  $('#fsBtnTop').addEventListener('click', toggle);
+  $('#fsBar').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
+  });
+  document.addEventListener('fullscreenchange', sync);
+  sync();
+}
+
+/* after the intro modal closes: blink the toggle white for four seconds, then
+   auto-switch to full screen and retire the banner. The dismissed-button's
+   follow-up runs only after that, so it doesn't compete with the switch — and
+   the toggle stays available if the user wants to switch back. */
+let fsAttnTimer = null;
+function fsAttention(followUp) {
+  const btn = $('#fsBtnTop');
+  const bar = $('#fsBar');
+  const done = () => { if (followUp) followUp(); };
+  if (document.fullscreenElement) {
+    bar.classList.add('gone'); // nothing left to sell
+    done();
+    return;
+  }
+  // pitch already delivered on an earlier dismissal (they may have exited
+  // full screen on purpose) — don't force the switch a second time
+  if (bar.classList.contains('gone')) { done(); return; }
+  // the pitch only works if it's on screen: surface the banner and toggle
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+  btn.classList.add('attn');
+  clearTimeout(fsAttnTimer);
+  fsAttnTimer = setTimeout(() => {
+    btn.classList.remove('attn');
+    // 4 s still sits inside the dismissing click's transient-activation
+    // window (~5 s in Chrome), so the auto-switch is allowed to succeed
+    const switching = document.fullscreenElement
+      ? Promise.resolve()
+      : document.documentElement.requestFullscreen();
+    switching
+      .then(() => bar.classList.add('gone'))
+      .catch(() => {}) // switch refused: leave the banner as the manual handle
+      .finally(done);
+  }, 4000);
 }
 
 /* ---------------- init ---------------- */
@@ -1835,15 +2706,21 @@ function init() {
     b.addEventListener('click', () => setMode(b.dataset.mode));
   });
   $('#passRunBtn').addEventListener('click', passRunToggle);
+  $('#passResetBtn').addEventListener('click', () => buildNet());
   $('#passUndoBtn').addEventListener('click', stepBack);
-  document.querySelectorAll('#passControls [data-phase]').forEach((b) => {
-    b.addEventListener('click', () => jumpPassPhase(b.dataset.phase));
-  });
+  $('#inferRunBtn').addEventListener('click', startInferRun);
+  $('#passStepBackBtn').addEventListener('click', passStepBackward);
+  $('#passStepFwdBtn').addEventListener('click', passStepForward);
+  window.addEventListener('resize', syncPassRowHeight);
+  initTimelineScrub();
   $('#cycleBtn').addEventListener('click', cycleNeurons);
   initSidePanel();
+  initModal();
+  initFullscreen();
+  applyFeaturePanelLabels();
 
   document.querySelectorAll('#datasetSeg button').forEach((b) => {
-    b.addEventListener('click', () => setData(b.dataset.set));
+    b.addEventListener('click', () => setData(b.dataset.set, $('#animCheck').checked));
   });
 
   $('#activationSel').addEventListener('change', (e) => {
@@ -1865,21 +2742,26 @@ function init() {
   slider('#batchSlider', '#batchVal', 'batch', BATCH_STEPS, String);
   slider('#l2Slider', '#l2Val', 'l2', L2_STEPS, String);
 
-  $('#overlayChk').addEventListener('change', (e) => {
-    state.overlay = e.target.checked;
+  // one view state, two segs (epoch + inference control sets):
+  // pilot view = reports only; ATC view = the net's full forecast overlay
+  const setOverlay = (on) => {
+    state.overlay = on;
+    document.querySelectorAll('#viewSeg button, #viewSeg2 button').forEach((b) => {
+      b.setAttribute('aria-pressed', String((b.dataset.view === 'atc') === on));
+    });
     requestRender();
+  };
+  document.querySelectorAll('#viewSeg button, #viewSeg2 button').forEach((b) => {
+    b.addEventListener('click', () => setOverlay(b.dataset.view === 'atc'));
   });
 
   const featCv = $('#featCanvas');
   featCv.addEventListener('pointerdown', onCanvasEdit);
   $('#archCanvas').addEventListener('pointerdown', onArchClick);
 
-  $('#btnClass').addEventListener('click', () => {
-    if (selectedPt < 0) return;
-    labels[selectedPt] = labels[selectedPt] === DOG ? CAT : DOG;
-    selectPoint(selectedPt); // refresh labels
-    requestRender();
-  });
+  $('#addOkBtn').addEventListener('click', (e) => armPirep(DOG, e.currentTarget));
+  $('#addRoughBtn').addEventListener('click', (e) => armPirep(CAT, e.currentTarget));
+  $('#addRandBtn').addEventListener('click', () => { disarmPirep(); addPirep(null); });
   $('#btnTag').addEventListener('click', () => {
     if (selectedPt < 0) return;
     const turnOn = !tagged[selectedPt];
@@ -1902,10 +2784,20 @@ function init() {
   });
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
+    // in full screen, Esc belongs to the browser (exit full screen) — don't
+    // also fire the app's Escape behaviors
+    if (document.fullscreenElement) return;
+    if (!$('#introModal').classList.contains('dismissed')) {
+      return; // the modal only closes via its own buttons or the ✕
+    }
+    if (armedPirep != null) {
+      disarmPirep();
+      return;
+    }
     if (selectedPt >= 0) {
       selectPoint(-1);
       requestRender();
-    } else if (state.mode === 'pass') {
+    } else if (state.mode !== 'epoch') {
       setMode('epoch');
     }
   });

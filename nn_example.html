@@ -35,7 +35,52 @@
       -webkit-font-smoothing: antialiased;
     }
 
-    .wrap { max-width: 1720px; margin: 0 auto; padding: 30px 22px 64px; }
+    .wrap { margin: 0 auto; padding: 22px 22px 64px; }
+
+    /* ---------- full-screen banner ---------- */
+    .fs-bar {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      padding: 7px 16px;
+      background: rgba(201, 133, 0, 0.12);
+      border-bottom: 1px solid rgba(201, 133, 0, 0.35);
+      color: var(--ink);
+      font: 700 11px var(--mono);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      cursor: pointer;
+      user-select: none;
+    }
+    .fs-bar:hover { background: rgba(201, 133, 0, 0.2); }
+    .fs-bar.gone { display: none; }
+    .fs-icon-wrap {
+      display: inline-flex;
+      padding: 4px;
+      border: 1px solid rgba(201, 133, 0, 0.55);
+      border-radius: 7px;
+      color: #c98500;
+    }
+
+    /* the permanent toggle above "replay video" — gold, blinking white for a
+       few seconds after the intro modal closes to catch the eye */
+    .util-col { display: flex; flex-direction: column; align-items: center; gap: 6px; align-self: center; }
+    .fs-toggle {
+      display: inline-flex;
+      padding: 6px;
+      border-radius: 8px;
+      background: transparent;
+      border: 1px solid rgba(201, 133, 0, 0.55);
+      color: #c98500;
+    }
+    .fs-toggle:hover { color: #c98500; border-color: #c98500; }
+    @keyframes fs-attn-blink { 50% { opacity: 0.2; } }
+    .fs-toggle.attn {
+      color: #ffffff;
+      border-color: #ffffff;
+      animation: fs-attn-blink 0.8s ease-in-out infinite;
+    }
 
     .layout {
       display: grid;
@@ -103,15 +148,27 @@
        nothing to layout sizing), so swapping them never moves content below */
     .page-top-main { flex: 1; min-width: 0; position: relative; }
     .page-top-main > .swapped-out { visibility: hidden; }
-    #timeline { position: absolute; inset: 0; margin: 0; }
+    /* stop 16px short of the box's bottom (the header's visual gap is a margin
+       inside the box) so the card keeps the standard inter-panel gap */
+    #timeline { position: absolute; inset: 0 0 16px; margin: 0; }
 
     .mode-ctl {
       flex: none;
       display: flex;
-      flex-direction: column;
-      align-items: flex-end;
-      gap: 7px;
+      align-items: stretch;
+      gap: 10px;
       padding-top: 4px;
+    }
+
+    /* the two mode families each get their own labeled panel */
+    .mode-group {
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+      background: var(--surface);
+      border: 1px solid var(--hairline);
+      border-radius: 12px;
+      padding: 9px 11px 10px;
     }
 
     .mode-seg button {
@@ -142,15 +199,26 @@
     .toolbar-stack { flex: 1; min-width: 0; display: grid; }
     .toolbar-stack > div { grid-area: 1 / 1; min-width: 0; }
 
-    .epoch-controls, .pass-controls {
+    .epoch-controls, .pass-controls, .infer-controls {
       display: flex;
       flex-wrap: wrap;
       gap: 14px 22px;
       align-items: flex-end;
+      /* the grid cell stretches all sets to the tallest one's height — pack
+         lines to the top so the shorter sets don't sink to the bottom */
+      align-content: flex-start;
     }
 
-    .toolbar.pass-mode .epoch-controls { visibility: hidden; }
+    /* the tall narration block would otherwise push the buttons down its line */
+    .pass-controls, .infer-controls { align-items: flex-start; }
+
+    .toolbar.pass-mode .epoch-controls,
+    .toolbar.infer-mode .epoch-controls { visibility: hidden; }
     .toolbar:not(.pass-mode) .pass-controls { visibility: hidden; }
+    .toolbar:not(.infer-mode) .infer-controls { visibility: hidden; }
+
+    .infer-readout { font: 600 15px var(--mono); color: var(--ink); padding: 6px 0; }
+    .infer-readout b { font-weight: 700; }
 
     .pass-narration { flex: 1; min-width: 220px; }
 
@@ -190,10 +258,28 @@
     input[type="range"]:disabled::-moz-range-thumb { background: var(--muted); }
     .chip:has(input:disabled) { opacity: 0.55; }
 
+    /* Reset weights re-rolls the whole model — flag it in the same gold as
+       the active mode chip */
+    #resetBtn, #passResetBtn {
+      background: #c98500;
+      border-color: #c98500;
+      color: #141413;
+      font-weight: 700;
+    }
+    #resetBtn:hover, #passResetBtn:hover {
+      background: #dc9711;
+      border-color: #dc9711;
+      color: #141413;
+    }
+
     .btn-primary {
       display: inline-flex;
       align-items: center;
+      justify-content: center;
       gap: 7px;
+      /* wide enough for the longest label (Resume) so Train/Pause/Resume
+         swaps never reflow the toolbar row */
+      min-width: 100px;
       background: var(--ink);
       border-color: var(--ink);
       color: var(--page);
@@ -295,17 +381,21 @@
       flex-direction: column;
     }
 
-    canvas.arch { display: block; width: 100%; flex: 1; min-height: 0; cursor: pointer; }
+    /* the canvas is an absolute overlay inside this wrapper so its dpr-scaled
+       backing store can NEVER feed back into layout sizing (the row is pinned
+       by the square side panels) — same decoupling as the timeline card */
+    .arch-wrap { position: relative; flex: 1; min-height: 0; }
+    canvas.arch { position: absolute; inset: 0; width: 100%; height: 100%; cursor: pointer; }
 
     @media (max-width: 1520px) {
       .viz { grid-template-columns: 1fr 1fr; }
       .arch-panel { order: 1; grid-column: 1 / -1; }
-      canvas.arch { flex: none; aspect-ratio: 8 / 5; }
+      .arch-wrap { flex: none; aspect-ratio: 8 / 5; }
     }
 
     @media (max-width: 880px) {
       .viz { grid-template-columns: 1fr; }
-      canvas.arch { aspect-ratio: 1; }
+      .arch-wrap { aspect-ratio: 1; }
     }
 
     .panel header {
@@ -339,7 +429,32 @@
     .hint { font: 12px/1.7 var(--mono); color: var(--muted); margin: 10px 2px 0; }
     .hint kbd { color: var(--ink-sec); }
 
-    .feat-hint { min-height: 29px; display: flex; align-items: center; }
+    .feat-hint { min-height: 29px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    #pirepAdders { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+    #pirepAdders[hidden] { display: none; }
+
+    .pirep-add {
+      font: 700 10px var(--mono);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 6px 10px;
+      border-radius: 999px;
+      color: #141413;
+    }
+    .pirep-add.ok { background: var(--dog); border-color: var(--dog); }
+    .pirep-add.ok:hover { background: #5598e7; border-color: #5598e7; color: #141413; }
+    .pirep-add.rough { background: var(--cat); border-color: var(--cat); }
+    .pirep-add.rough:hover { background: #e26b3c; border-color: #e26b3c; color: #141413; }
+    .pirep-add.rand { background: #898781; border-color: #898781; }
+    .pirep-add.rand:hover { background: #a3a19a; border-color: #a3a19a; color: #141413; }
+
+    .adder-lead { align-self: center; }
+
+    /* an armed chip blinks until its report is placed on the map */
+    @keyframes pirep-blink { 50% { opacity: 0.3; } }
+    .pirep-add.arming { animation: pirep-blink 0.85s ease-in-out infinite; }
+    body.placing, body.placing * { cursor: crosshair !important; }
+
     #ptActions { display: inline-flex; align-items: center; gap: 7px; flex-wrap: wrap; }
     #ptActions[hidden] { display: none; }
     #ptLabel { color: var(--ink); font-weight: 600; margin-right: 3px; }
@@ -394,21 +509,42 @@
     .pipe-item:hover canvas { border-color: rgba(255, 255, 255, 0.35); }
     .pipe-item.sel canvas { border-color: var(--ink); box-shadow: 0 0 0 1px var(--ink); }
     .pipe-item.sel .nm { color: var(--ink); }
-    .pipe-arrow { color: var(--muted); font: 14px var(--mono); flex: 0 0 auto; }
+    /* operation chips between the minis: Σ, activation curve, softmax */
+    .pipe-op {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font: 600 10.5px var(--mono);
+      color: var(--muted);
+      border: 1px solid var(--hairline);
+      border-radius: 8px;
+      padding: 5px 7px;
+      /* center on the mini canvases, not on canvas + name-label */
+      margin-bottom: 21px;
+    }
+    .pipe-op svg { display: block; }
 
     /* ---------- follow-one-pass mode ---------- */
-    .viz.passing { grid-template-columns: 1.35fr 1fr; }
+    /* the detail column keeps epoch mode's 1-in-2.72 width share, so its
+       square canvas pins this row to (almost exactly) the epoch-mode height —
+       the network panel absorbs the hidden feature panel's width instead of
+       growing taller and pushing the pipeline off-screen */
+    .viz.passing { grid-template-columns: 1.72fr 1fr; }
     .viz.passing #panelFeature { display: none; }
     .viz.passing .arch-panel { order: 0; grid-column: auto; }
-    .viz.passing canvas.arch {
-      flex: none;
-      aspect-ratio: auto;
-      height: clamp(340px, calc(100vh - 330px), 720px);
+    .viz.passing .arch-wrap { flex: 1; min-height: 340px; }
+
+    /* --row-h is measured from the hidden feature panel by syncPassRowHeight()
+       so the pass row is pixel-identical to the epoch row */
+    @media (min-width: 1521px) {
+      .viz.passing .arch-panel,
+      .viz.passing #panelDetail { height: var(--row-h, auto); }
     }
 
     @media (max-width: 880px) {
       .viz.passing { grid-template-columns: 1fr; }
-      .viz.passing canvas.arch { flex: none; aspect-ratio: 1; min-height: 0; }
+      .viz.passing .arch-wrap { flex: none; height: auto; aspect-ratio: 1; min-height: 0; }
     }
 
     .pass-chips { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; min-height: 29px; }
@@ -431,6 +567,34 @@
       background: rgba(201, 133, 0, 0.09);
     }
 
+    /* the chips are read-only progress indicators (always disabled buttons):
+       keep them at full strength whenever a pass exists */
+    .pass-controls.pass-live .pass-chips button:disabled { opacity: 1; }
+
+    /* paused → the current phase fills solid like the active mode chip */
+    .pass-controls.pass-paused .pass-chips button.on {
+      background: #c98500;
+      border-color: #c98500;
+      color: #141413;
+    }
+
+    /* label swaps (−1 step ↔ Prior epoch) must not jog the row */
+    .pass-step { min-width: 96px; }
+
+    .anim-check {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 7px;
+      font: 10px var(--mono);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      cursor: pointer;
+      user-select: none;
+    }
+    .anim-check input { accent-color: #c98500; cursor: pointer; margin: 0; }
+
     .pass-caption {
       font: 11.5px/1.5 var(--mono);
       color: var(--ink-sec);
@@ -452,23 +616,132 @@
       overflow: hidden;
     }
 
+    /* chip rail: wraps onto new lines as sections are added; the pane below
+       follows the selected chip */
     .side-tabs {
       display: flex;
-      gap: 2px;
-      padding: 10px 12px 0;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding: 12px 12px 11px;
       border-bottom: 1px solid var(--hairline);
       flex: none;
     }
 
-    .side-tab {
-      border: none;
-      background: transparent;
-      padding: 9px 14px;
-      border-radius: 8px 8px 0 0;
-      font-weight: 600;
+    .side-tabs-title {
+      width: 100%; /* own line: the chips wrap beneath it */
+      font: 600 12px/1.3 var(--mono);
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      color: var(--ink);
+      margin: 0 2px 4px;
     }
 
-    .side-tab[aria-selected="true"] { color: var(--ink); background: #242422; }
+    .side-tab {
+      font: 600 10px var(--mono);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 6px 11px;
+      border-radius: 999px;
+      color: var(--muted);
+      background: transparent;
+      border: 1px solid var(--hairline);
+    }
+
+    .side-tab:hover { color: var(--ink); border-color: rgba(255, 255, 255, 0.35); }
+
+    .side-tab[aria-selected="true"],
+    .side-tab[aria-selected="true"]:hover {
+      color: var(--page);
+      background: var(--ink);
+      border-color: var(--ink);
+    }
+
+    .intro-fig { display: block; width: 100%; height: auto; margin: 4px 0 8px; }
+
+    /* ---------- one-off welcome modal ---------- */
+    .intro-modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+      background: rgba(13, 13, 13, 0.72);
+      backdrop-filter: blur(3px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+
+    .intro-modal-backdrop.dismissed { display: none; }
+
+    .intro-modal {
+      position: relative;
+      width: min(580px, 100%);
+      background: var(--surface);
+      border: 1px solid var(--hairline);
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+    }
+
+    .intro-modal-fig {
+      display: block;
+      width: 100%;
+      height: auto;
+      background: #141413;
+      border-bottom: 1px solid var(--hairline);
+    }
+
+    .intro-modal-body {
+      padding: 22px 26px 26px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 13px;
+      text-align: center;
+    }
+
+    .intro-modal-body h2 {
+      font: 650 24px/1.15 var(--sans);
+      letter-spacing: -0.02em;
+      color: var(--ink);
+      margin: 0 0 3px;
+    }
+
+    .mline {
+      margin: 0;
+      font: 12.5px/1.7 var(--mono);
+      color: var(--ink-sec);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .mline-scene { display: block; text-align: center; color: var(--muted); }
+
+    .replay-btn {
+      align-self: center;
+      font: 600 10px var(--mono);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 8px 12px;
+      border-radius: 999px;
+      color: var(--muted);
+      background: transparent;
+    }
+    .replay-btn:hover { color: var(--ink); }
+
+    .intro-modal-x {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      z-index: 1;
+      background: rgba(20, 20, 19, 0.6);
+      border-color: rgba(255, 255, 255, 0.18);
+      border-radius: 999px;
+      padding: 6px 9px;
+    }
 
     .side-body {
       overflow-y: auto;
@@ -476,7 +749,20 @@
       display: flex;
       flex-direction: column;
       gap: 10px;
+      /* quiet scrollbar: a shade lighter than the card so it doesn't compete
+         with the browser's own scrollbar */
+      scrollbar-width: thin;
+      scrollbar-color: #33332f #1f1f1e;
     }
+
+    .side-body::-webkit-scrollbar { width: 10px; }
+    .side-body::-webkit-scrollbar-track { background: #1f1f1e; }
+    .side-body::-webkit-scrollbar-thumb {
+      background: #33332f;
+      border-radius: 5px;
+      border: 2px solid #1f1f1e;
+    }
+    .side-body::-webkit-scrollbar-thumb:hover { background: #3f3f3b; }
 
     .side-body[hidden] { display: none; }
 
@@ -502,6 +788,36 @@
     .side-card a { color: var(--ink-sec); }
     .side-card a:hover { color: var(--ink); }
     .side-card.hl { border-color: #c98500; background: rgba(201, 133, 0, 0.08); }
+
+    /* the guided path through the tabs: Intro → … → Decide → Intro */
+    .side-next { display: flex; align-items: center; gap: 9px; margin-top: 4px; }
+    .next-chip {
+      font: 600 10px var(--mono);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 6px 12px;
+      border-radius: 999px;
+      color: #c98500;
+      border: 1px solid #c98500;
+      background: transparent;
+      flex: none;
+    }
+    .next-chip:hover { background: #c98500; color: #141413; }
+    .side-next-label { font: 12px/1.4 var(--sans); color: var(--muted); }
+
+    /* every card is clickable: Describe cards flash their page panel, the
+       rest simply take the highlight */
+    .side-card { cursor: pointer; }
+    .side-card:hover { border-color: rgba(255, 255, 255, 0.3); }
+
+    /* the clicked page panel flashes gold in step with its Describe card */
+    .hl-panel { border-color: #c98500 !important; box-shadow: 0 0 0 1px #c98500; }
+
+    /* Describe cards are scoped to the mode(s) whose panels they explain;
+       cards without data-mode show everywhere */
+    #describePane[data-mode="epoch"] .side-card[data-mode]:not([data-mode~="epoch"]),
+    #describePane[data-mode="pass"] .side-card[data-mode]:not([data-mode~="pass"]),
+    #describePane[data-mode="infer"] .side-card[data-mode]:not([data-mode~="infer"]) { display: none; }
 
     @media (prefers-reduced-motion: reduce) {
       .side-card { transition: none; }
@@ -557,6 +873,15 @@
 </head>
 
 <body>
+  <div class="fs-bar" id="fsBar" role="button" tabindex="0" title="Toggle full screen">
+    <span id="fsLabel">switching to full screen to give the best experience</span>
+    <span class="fs-icon-wrap" aria-hidden="true">
+      <svg id="fsIcon" width="15" height="15" viewBox="0 0 16 16" fill="none"
+        stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      </svg>
+    </span>
+  </div>
+
   <div class="wrap">
     <div class="layout">
     <div class="main-col">
@@ -564,12 +889,13 @@
     <div class="page-top">
       <div class="page-top-main">
         <header id="pageHeader">
-          <p class="eyebrow">convnetjs · 2-d classifier · cats vs dogs</p>
+          <p class="eyebrow">convnetjs · 2-d classifier · turbulence ahead</p>
           <h1>How a neural net bends space</h1>
           <p class="sub">
-            Train a tiny network to tell two classes apart — and watch every layer stretch, fold and
-            squash the feature space until the classes come apart. Click a stage in the filmstrip below
-            to inspect exactly what that layer does to the output of the one before it.
+            Scattered PIREPs report the ride; your route crosses airspace nobody has sampled. Train a
+            tiny network to reconstruct the turbulence map — and watch every layer stretch, fold and
+            squash that map until ok air and divert-grade air come apart. Click a stage in the
+            filmstrip below to inspect exactly what that layer does to the output of the one before it.
           </p>
         </header>
 
@@ -580,12 +906,31 @@
         </div>
       </div>
 
-      <div class="mode-ctl tip-right tip-below"
-        data-tip="EPOCH mode trains on the whole dataset, one epoch per step. SINGLE PASS mode slows everything down to one sample at a time, animating forward prop, loss, backprop and the weight update over the network diagram.">
-        <span class="ctl-label">Mode</span>
-        <div class="seg mode-seg" role="group" aria-label="Training mode">
-          <button type="button" data-mode="epoch" aria-pressed="true">epoch</button>
-          <button type="button" data-mode="pass" aria-pressed="false">single pass</button>
+      <div class="mode-ctl">
+        <div class="mode-group tip-right tip-below"
+          data-tip="Modes that change the weights. EPOCH trains on the whole dataset, one epoch per step. SINGLE PASS slows everything down to one sample at a time, animating forward prop, loss, backprop and the weight update.">
+          <span class="ctl-label">Training</span>
+          <div class="seg mode-seg" role="group" aria-label="Training modes">
+            <button type="button" data-mode="epoch" aria-pressed="true">epoch</button>
+            <button type="button" data-mode="pass" aria-pressed="false">single pass</button>
+          </div>
+        </div>
+        <div class="mode-group tip-right tip-below"
+          data-tip="Learning is frozen: INFERENCE pushes a single waypoint of your choosing through the trained net and shows the ride it forecasts there.">
+          <span class="ctl-label">Running</span>
+          <div class="seg mode-seg" role="group" aria-label="Running modes">
+            <button type="button" data-mode="infer" aria-pressed="false">inference</button>
+          </div>
+        </div>
+        <div class="util-col">
+          <button id="fsBtnTop" type="button" class="fs-toggle tip-right tip-below"
+            aria-label="Toggle full screen" data-tip="Toggle full screen.">
+            <svg id="fsIconTop" width="15" height="15" viewBox="0 0 16 16" fill="none"
+              stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            </svg>
+          </button>
+          <button id="replayBtn" type="button" class="replay-btn tip-right tip-below"
+            data-tip="Replay the opening title sequence — PIREPs arriving on the map, and the question they pose.">▶ replay video</button>
         </div>
       </div>
     </div>
@@ -613,14 +958,17 @@
       </div>
 
       <div class="ctl"
-        data-tip="The pattern of cats and dogs the net must learn. 'simple' is separable by one straight line; 'circle' and 'spiral' can only be solved by bending the space with hidden layers. Locked while a run is active — press Reset weights to change it.">
-        <span class="ctl-label">Dataset</span>
-        <div class="seg" id="datasetSeg" role="group" aria-label="Dataset">
-          <button type="button" data-set="simple" aria-pressed="false">simple</button>
-          <button type="button" data-set="circle" aria-pressed="true">circle</button>
-          <button type="button" data-set="spiral" aria-pressed="false">spiral</button>
-          <button type="button" data-set="random" aria-pressed="false">random</button>
+        data-tip="The weather pattern behind the PIREPs. A 'front' is separable by one straight line; a 'storm cell' and 'cyclone' bands can only be mapped by bending the space with hidden layers; 'scattered' convection has no pattern to learn. Locked while a run is active — press Reset weights to change it.">
+        <span class="ctl-label">Weather</span>
+        <div class="seg" id="datasetSeg" role="group" aria-label="Weather pattern">
+          <button type="button" data-set="simple" aria-pressed="false">front</button>
+          <button type="button" data-set="circle" aria-pressed="true">storm cell</button>
+          <button type="button" data-set="spiral" aria-pressed="false">cyclone</button>
+          <button type="button" data-set="random" aria-pressed="false">scattered</button>
         </div>
+        <label class="anim-check">
+          <input type="checkbox" id="animCheck" checked> show animation
+        </label>
       </div>
 
       <div class="ctl"
@@ -676,12 +1024,12 @@
       </div>
 
       <div class="ctl"
-        data-tip="Tint every region of the plane by the net's current guess. The decision boundary is where blue meets orange.">
-        <span class="ctl-label">Prediction</span>
-        <label class="switch">
-          <input type="checkbox" id="overlayChk" checked>
-          shade regions
-        </label>
+        data-tip="PILOT VIEW shows only the reports — all a crew actually has. ATC VIEW overlays the net’s full ride forecast for every position; the decision boundary is where the colors meet.">
+        <span class="ctl-label">View</span>
+        <div class="seg" id="viewSeg" role="group" aria-label="Map view">
+          <button type="button" data-view="pilot" aria-pressed="false">pilot view</button>
+          <button type="button" data-view="atc" aria-pressed="true">atc view</button>
+        </div>
       </div>
 
       <div class="readout">
@@ -708,29 +1056,69 @@
           <span class="ctl-label">Run</span>
           <div class="ctl-row">
             <button id="passRunBtn" class="btn-primary" type="button"
-              data-tip="Run the walkthrough: trains once on the traced (gold) point — batch size forced to 1 — and animates forward, loss, backward, update. Pause freezes the animation and unlocks the phase chips.">
+              data-tip="Run the walkthrough: trains once on the traced (gold) point — batch size forced to 1 — and animates forward, loss, backward, update. Pause freezes the animation and unlocks the ±1 step buttons.">
               <svg id="passRunIcon" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
                 <path d="M4 2.5v11l9-5.5z" />
               </svg>
               <span id="passRunLabel">Run</span>
             </button>
+            <button id="passResetBtn" type="button"
+              data-tip="Throw away everything the net has learned and start from fresh random weights. Architecture, data and settings stay.">Reset weights</button>
+            <button id="passStepBackBtn" type="button" class="pass-step" disabled
+              data-tip="While paused: move the animation back one step. At the first step it reads 'Prior epoch' and rewinds to the final step of the previous epoch's pass.">−1 step</button>
+            <button id="passStepFwdBtn" type="button" class="pass-step" disabled
+              data-tip="While paused: move the animation forward one step. At the final step it reads 'Next epoch' and rolls into the next epoch's pass, still paused.">+1 step</button>
             <button id="passUndoBtn" type="button" disabled
-              data-tip="Rewind the last pass — weights, loss and the epoch counter are restored exactly.">undo pass</button>
+              data-tip="Rewind one animated cycle — weights, loss and the epoch counter are restored exactly.">undo pass</button>
           </div>
         </div>
         <div class="ctl">
-          <span class="ctl-label">Phase · click to replay</span>
+          <span class="ctl-label">Phase</span>
           <div class="pass-chips">
-            <button type="button" data-phase="sample">sample</button>
-            <button type="button" data-phase="forward">forward</button>
-            <button type="button" data-phase="loss">loss</button>
-            <button type="button" data-phase="backward">backward</button>
-            <button type="button" data-phase="update">update</button>
+            <button type="button" data-phase="sample" disabled>sample</button>
+            <button type="button" data-phase="forward" disabled>forward</button>
+            <button type="button" data-phase="loss" disabled>loss</button>
+            <button type="button" data-phase="backward" disabled>backward</button>
+            <button type="button" data-phase="update" disabled>update</button>
           </div>
         </div>
         <div class="ctl pass-narration">
           <span class="ctl-label">Narration</span>
           <p class="pass-caption" id="passCaption"></p>
+        </div>
+      </div>
+
+      <div class="infer-controls" id="inferControls">
+        <div class="ctl">
+          <span class="ctl-label">Run</span>
+          <div class="ctl-row">
+            <button id="inferRunBtn" class="btn-primary" type="button"
+              data-tip="Animate the forward pass: watch the input point's values travel layer by layer until they become the two class probabilities. No weights change — inference only.">
+              <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M4 2.5v11l9-5.5z" />
+              </svg>
+              <span>Run</span>
+            </button>
+          </div>
+        </div>
+        <div class="ctl">
+          <span class="ctl-label">Waypoint</span>
+          <div class="infer-readout" id="inferPtVal">(0.00, 0.00)</div>
+        </div>
+        <div class="ctl">
+          <span class="ctl-label" data-tip="The trained net's softmax output for this waypoint — two probabilities that sum to 1. The larger one makes the call: stay on plan, or divert.">Forecast</span>
+          <div class="infer-readout" id="inferOutVal">—</div>
+        </div>
+        <div class="ctl" data-tip="PILOT VIEW shows only the reports — all a crew actually has. ATC VIEW overlays the net’s full ride forecast for every position; the decision boundary is where the colors meet.">
+          <span class="ctl-label">View</span>
+          <div class="seg" id="viewSeg2" role="group" aria-label="Map view">
+            <button type="button" data-view="pilot" aria-pressed="false">pilot view</button>
+            <button type="button" data-view="atc" aria-pressed="true">atc view</button>
+          </div>
+        </div>
+        <div class="ctl pass-narration">
+          <span class="ctl-label">Narration</span>
+          <p class="pass-caption" id="inferCaption"></p>
         </div>
       </div>
       </div><!-- /toolbar-stack -->
@@ -739,21 +1127,27 @@
     <main class="viz">
       <section class="panel" id="panelFeature">
         <header>
-          <h2 data-tip="The training data in its raw two-feature coordinates. With shading on, every region shows what the net would currently predict there.">Feature space</h2>
-          <div class="legend">
-            <span class="dotlab"><span class="dot" style="background:var(--dog)"></span>dog</span>
-            <span class="dotlab"><span class="dot" style="background:var(--cat)"></span>cat</span>
+          <h2 data-tip="Every PIREP filed so far, plotted by position (km east, km north). In ATC view, every region shows the ride the net would currently forecast there.">Airspace map (feature space)</h2>
+          <div class="legend"
+            data-tip="PIREP turbulence grades: 1 light turbulence · 2 light chop · 3 moderate turbulence · 4 moderate chop · 5 severe · 6 extreme. A passenger flight diverts for grade 4+.">
+            <span class="dotlab"><span class="dot" style="background:var(--dog)"></span>ok · 1–3</span>
+            <span class="dotlab"><span class="dot" style="background:var(--cat)"></span>rough · 4–6</span>
           </div>
         </header>
         <canvas id="featCanvas" class="stage">Your browser does not support canvas.</canvas>
         <div class="hint feat-hint">
-          <span id="featInstr">
-            click empty space to add a <b style="color:var(--dog)">dog</b> ·
-            click a data point to edit or tag it
+          <span id="pirepAdders">
+            <span class="adder-lead">choose, then click on the map:</span>
+            <button id="addOkBtn" class="pirep-add ok" type="button"
+              data-tip="Arm an ok-ride PIREP (grade 1–3), then click the map to place it. Click again or press Esc to cancel.">+ ok pirep</button>
+            <button id="addRoughBtn" class="pirep-add rough" type="button"
+              data-tip="Arm a rough-ride PIREP (grade 4–6), then click the map to place it. Click again or press Esc to cancel.">+ rough pirep</button>
+            <button id="addRandBtn" class="pirep-add rand" type="button"
+              data-tip="File a PIREP at a random position with a random grade — ok or rough.">+ random pirep</button>
           </span>
+          <span id="featInstr">click a data point to tag it</span>
           <span id="ptActions" hidden>
             <span id="ptLabel"></span>
-            <button id="btnClass" type="button"></button>
             <button id="btnTag" type="button"
               data-tip="Tagged points are traced through the network: their values show in the diagram and detail views, and they render gold everywhere."></button>
             <button id="btnRemove" type="button">Remove</button>
@@ -764,9 +1158,11 @@
 
       <section class="panel arch-panel" id="panelNetwork">
         <header>
-          <h2>Network</h2>
+          <h2>Neural network</h2>
         </header>
-        <canvas id="archCanvas" class="arch">Your browser does not support canvas.</canvas>
+        <div class="arch-wrap">
+          <canvas id="archCanvas" class="arch">Your browser does not support canvas.</canvas>
+        </div>
         <p class="hint">
           input at the top, prediction at the bottom · line thickness = weight strength ·
           <span style="color:var(--dog)">blue +</span> / <span style="color:var(--cat)">orange −</span> ·
@@ -802,31 +1198,222 @@
     </div><!-- /main-col -->
 
     <aside class="side" aria-label="Guide">
-      <div class="side-tabs" role="tablist">
-        <button id="tabDescribe" class="side-tab" type="button" role="tab" aria-selected="true">Describe</button>
+      <div class="side-tabs" role="tablist" aria-label="Info tabs">
+        <h2 class="side-tabs-title">Info tabs</h2>
+        <button id="tabIntro" class="side-tab" type="button" role="tab" aria-selected="true">Intro</button>
+        <button id="tabDescribe" class="side-tab" type="button" role="tab" aria-selected="false">Describe</button>
         <button id="tabExplore" class="side-tab" type="button" role="tab" aria-selected="false">Explore</button>
         <button id="tabDelve" class="side-tab" type="button" role="tab" aria-selected="false">Delve inside</button>
+        <button id="tabDecide" class="side-tab" type="button" role="tab" aria-selected="false">Decide</button>
       </div>
 
-      <div class="side-body" id="describePane" role="tabpanel">
+      <div class="side-body" id="introPane" role="tabpanel">
+        <p class="side-intro">
+          What this tool is for, and how to find your way around it.
+        </p>
+
+        <section class="side-card" id="intro-what">
+          <h3>What you're looking at</h3>
+          <p>
+            A tiny neural network learning to recognize patterns in data, live in your browser.
+            The scenario: aircraft ahead of you have been filing <b>PIREPs</b> — pilot reports of
+            the ride, graded 1–6 from light turbulence to extreme. Grades
+            <b style="color:var(--dog)">1–3</b> (up to moderate turbulence) are tolerable for a
+            passenger flight; grades <b style="color:var(--cat)">4–6</b> (moderate chop or worse)
+            are worth the fuel cost of a diversion. Each PIREP is just a position and a grade —
+            a dot on a map. Turbulence is invisible; the only way to know about air nobody has
+            flown through is to <i>infer</i> it from the reports around it.
+          </p>
+          <svg class="intro-fig" viewBox="0 0 300 204" role="img"
+            aria-label="An airspace map dotted with PIREPs, a filed route crossing a rough band, and an airliner outside the map about to enter it.">
+            <!-- the airspace map -->
+            <rect x="30" y="8" width="240" height="160" rx="6" fill="#141413" stroke="#2c2c2a"/>
+            <path d="M50 8v160M70 8v160M90 8v160M110 8v160M130 8v160M150 8v160M170 8v160M190 8v160M210 8v160M230 8v160M250 8v160M30 28h240M30 48h240M30 68h240M30 88h240M30 108h240M30 128h240M30 148h240"
+              stroke="#ffffff" stroke-opacity="0.04" stroke-width="1"/>
+            <text x="262" y="180" font-size="8" font-family="ui-monospace,Menlo,monospace" fill="#898781" text-anchor="end">km east →</text>
+            <text x="26" y="16" font-size="8" font-family="ui-monospace,Menlo,monospace" fill="#898781" text-anchor="end" transform="rotate(-90 26 16) translate(-40 0)">km north →</text>
+            <!-- ok PIREPs (blue) scattered wide -->
+            <g fill="#3987e5">
+              <circle cx="60" cy="140" r="4"/><circle cx="88" cy="56" r="4"/>
+              <circle cx="126" cy="128" r="4"/><circle cx="200" cy="36" r="4"/>
+              <circle cx="238" cy="118" r="4"/><circle cx="152" cy="26" r="4"/>
+              <circle cx="222" cy="146" r="4"/>
+            </g>
+            <!-- rough PIREPs (orange): a band lying right across the route -->
+            <g fill="#d95926">
+              <circle cx="104" cy="96" r="4"/><circle cx="132" cy="80" r="4"/>
+              <circle cx="162" cy="88" r="4"/><circle cx="188" cy="66" r="4"/>
+              <circle cx="146" cy="104" r="4"/>
+            </g>
+            <!-- two labeled reports, the rest have already settled into dots -->
+            <text x="170" y="80" font-size="8.5" font-family="ui-monospace,Menlo,monospace" fill="#d95926" font-weight="600">N417KD · 5</text>
+            <text x="68" y="133" font-size="8.5" font-family="ui-monospace,Menlo,monospace" fill="#3987e5" font-weight="600">N204QB · 2</text>
+            <!-- the filed route: enters from outside, crosses the rough band -->
+            <path d="M4 196 C 60 178, 100 130, 150 88 S 240 34, 296 16"
+              stroke="#c98500" stroke-width="1.6" stroke-dasharray="6 5" fill="none"/>
+            <path d="M0 -10 L2.2 -3 L11 3 L11 5.5 L2.2 3 L1.6 8.5 L5 11 L5 13 L0 11.6 L-5 13 L-5 11 L-1.6 8.5 L-2.2 3 L-11 5.5 L-11 3 L-2.2 -3 Z"
+              fill="#e8e6dc" transform="translate(14 190) rotate(65)"/>
+            <text x="150" y="199" font-size="10" font-family="ui-monospace,Menlo,monospace"
+              fill="#c98500" font-weight="700" text-anchor="middle">should it divert — and if so, how?</text>
+          </svg>
+          <p>
+            That map is the <b>airspace map</b> panel: each PIREP is one dot at position
+            (x₁ = km east, x₂ = km north), blue for ok, orange for divert-grade. The network's
+            whole job is to reconstruct the turbulence pattern from those scattered reports — a
+            real image classifier does the same thing with millions of inputs instead of two;
+            we use two so you can watch every step of it happen.
+          </p>
+        </section>
+
+        <section class="side-card">
+          <h3>Training vs. running</h3>
+          <p>
+            A network's life has two phases. <b>Training</b>: show it PIREPs whose ride is known,
+            measure how wrong its map is (the <i>loss</i>), and nudge every weight to be slightly
+            less wrong — then repeat, thousands of times. <b>Running</b> (inference): freeze the
+            weights and ask the finished net about waypoints nobody has reported on. The two mode
+            panels at the top right mirror exactly this split — and this is the answer to "why not
+            just use the forecast?": every forecast map <i>is</i> the output of a model like this
+            one; the ground truth underneath is always scattered point reports.
+          </p>
+        </section>
+
+        <section class="side-card">
+          <h3>Three modes, three insights</h3>
+          <p>
+            <b>Epoch</b> — training at full speed. Watch the forecast boundary form on the airspace
+            map, the loss fall, and each layer bend space in the filmstrip. This is also where you
+            shape the experiment: file new PIREPs, change the weather pattern, the layers,
+            the activation, the rates.
+          </p>
+          <p>
+            <b>Single pass</b> — training in slow motion. One PIREP's forward pass, loss, backprop
+            and weight update play out over an enlarged network diagram, phase by phase, with the
+            real numbers. This is where the learning rule itself becomes visible.
+          </p>
+          <p>
+            <b>Inference</b> — the trained net at work. Place a waypoint anywhere on the map and
+            watch the forward pass turn it into P(ok) and P(rough) — and a call: stay on plan, or
+            divert. Nothing learns here; this is what "using a model" means.
+          </p>
+        </section>
+
+        <section class="side-card">
+          <h3>Finding your way</h3>
+          <p>
+            Nearly everything on the page is clickable. In any mode, click the <b>background of a
+            panel</b> and the <b>Describe</b> tab jumps to that panel's card — the cards change with
+            the mode, so click around in each one. Click <b>circles, connections and activation
+            boxes</b> in the network diagram, or any <b>filmstrip stage</b>, to open its detail
+            view.
+          </p>
+          <p>
+            The <b>Explore</b> tab holds guided experiments — ways to poke the net and see
+            something surprising; the details behind what each panel is showing live there. The
+            <b>Delve inside</b> tab is a set of directed walkthroughs for single-pass mode, one
+            phase of the learning rule at a time.
+          </p>
+        </section>
+
+        <div class="side-next">
+          <button type="button" class="next-chip" data-next="tabDescribe">Next ▸</button>
+          <span class="side-next-label">Find out about the panels</span>
+        </div>
+      </div>
+
+      <div class="side-body" id="describePane" role="tabpanel" data-mode="epoch" hidden>
         <p class="side-intro">
           What each panel shows and what you can click. Clicking the background of any panel
           on the page jumps to its card here.
         </p>
 
-        <section class="side-card" id="desc-controls">
+        <section class="side-card" data-mode="pass" id="desc-pass-controls">
+          <h3>Run a single pass</h3>
+          <p>
+            <b>Run</b> follows the traced (gold) PIREP through training, and like epoch mode it
+            never stops on its own: each cycle animates that report's real training step —
+            <b>sample → forward → loss → backward → update</b>, batch size forced to 1 — then
+            fast-forwards the rest of the epoch in the background and rolls straight into the next
+            one. The epoch counter, timeline and every diagram advance as it goes.
+          </p>
+          <p>
+            <b>Pause</b> freezes it and unlocks <b>−1 / +1 step</b>: walk the animation backwards
+            and forwards one step at a time while the phase chips light up to show where you are.
+            At the first step the back button reads <b>Prior epoch</b> and rewinds into the end of
+            the previous epoch's pass; at the final step the forward button reads <b>Next
+            epoch</b> and rolls into the next one, still paused. Run resumes from wherever you
+            stopped. <b>undo pass</b> rewinds one whole cycle; <b>Reset weights</b> starts the run
+            over from fresh random values. The narration line spells out what the current phase is
+            doing, with the real numbers.
+          </p>
+        </section>
+
+        <section class="side-card" data-mode="pass" id="desc-pass-network">
+          <h3>Neural network (the stage)</h3>
+          <p>
+            The expanded diagram is where the pass plays out. During <b>forward</b>, each row
+            lights up as the sample's real activations arrive — pending layers stay dim.
+            <b>loss</b> rings the reported grade's softmax box and prints −log P(truth).
+            <b>backward</b> washes neurons violet by their share of the blame — brighter means more
+            responsibility. <b>update</b> redraws the connections that just changed: blue got
+            stronger, orange got weaker, thickness shows how much.
+          </p>
+          <p>
+            Everything stays clickable mid-pass: a <b>circle</b> opens that neuron's arithmetic, a
+            <b>line</b> a single weight, an <b>activation box</b> that stage's warp — all computed
+            for the traced PIREP.
+          </p>
+        </section>
+
+        <section class="side-card" data-mode="infer" id="desc-infer">
+          <h3>Inference</h3>
+          <p>
+            Training is frozen — this mode asks the net for the ride ahead. The airspace map
+            becomes a single <b>waypoint</b> on your route: click anywhere to move it, and the
+            forecast readout updates instantly with P(ok) and P(rough) from the current weights —
+            plus the call a passenger flight would make: <b>stay on plan</b>, or <b>divert</b>
+            (moderate chop or worse). In <b>ATC view</b>, the background shows the verdict for
+            every possible waypoint at once — divert by picking a corridor through the blue.
+            <b>Pilot view</b> hides the forecast: just you and the reports.
+          </p>
+          <p>
+            <b>Run</b> animates the forward pass — the waypoint's two coordinates travel layer by
+            layer through the network diagram until they become the two probabilities. Nothing
+            trains, no loss, no gradients: this is the whole life of a deployed network. The layer-by-layer
+            strip and every network component stay clickable.
+          </p>
+        </section>
+
+        <section class="side-card" data-mode="epoch pass" id="desc-timeline">
+          <h3>Epoch timeline</h3>
+          <p>
+            Takes the title's place once a run starts. The gold line is <b>now</b>: every panel on
+            the page is a snapshot of this exact moment in an evolving training process. The scale
+            stretches as the epoch count climbs, and “paused” marks a frozen simulation.
+            The violet trail unrolling behind the now-line is the <b>loss</b> — the average error
+            the training is pushing down, drawn against the run’s own worst value.
+            <b>+1 / −1 epoch</b> move the now-line with them — including backwards. While paused
+            you can also <b>drag the now-line</b> itself: scrub back through the recorded history
+            (about the last 200 snapshots) and forward again — every panel follows live, and
+            letting go commits the run to that moment.
+            <b>Reset weights</b> brings the title back until the next run leaves the station.
+          </p>
+        </section>
+
+        <section class="side-card" data-mode="epoch" id="desc-controls">
           <h3>Controls</h3>
           <p>
             Everything that defines the experiment. <b>Train</b> runs gradient descent continuously;
             while paused, <b>+1 / −1 epoch</b> step training forward one pass at a time or rewind it —
             weights, loss and the epoch counter are restored exactly.
-            The <b>mode</b> chip switches to <b>single pass</b>, which animates a single sample's
+            The <b>mode</b> chip switches to <b>single pass</b>, which animates a single PIREP's
             journey — forward prop, loss, backprop, weight update — over an expanded network
             diagram, with its own controls in this bar.
             <b>Reset weights</b> starts over from new random values.
           </p>
           <p>
-            <b>Dataset</b> swaps the pattern to learn. The <b>hidden layers</b> sliders and the
+            <b>Weather</b> swaps the pattern behind the PIREPs — front, storm cell, cyclone
+            bands, or patternless scattered convection. The <b>hidden layers</b> sliders and the
             <b>activation</b> menu change the architecture and rebuild the net from scratch.
             The <b>learning rate, momentum, batch size and L2</b> sliders retune the optimizer live,
             without touching what has been learned — watch the loss history react.
@@ -839,22 +1426,27 @@
           </p>
         </section>
 
-        <section class="side-card" id="desc-feature">
-          <h3>Feature space</h3>
+        <section class="side-card" data-mode="epoch" id="desc-feature">
+          <h3>Airspace map (feature space)</h3>
           <p>
-            The data plane: every position is a possible input (x₁, x₂); each dot is a training
-            example — blue dog, orange cat. With <b>shade regions</b> on, the background shows the
-            net's current prediction everywhere; the decision boundary is where the colors meet.
+            The map is the net's feature space: every position is a possible input
+            (x₁ = km east, x₂ = km north); each dot is one PIREP — blue ok (grade 1–3), orange
+            divert-grade (4–6). In <b>ATC view</b>, the background shows the ride the net
+            currently forecasts everywhere; the decision boundary is where the colors meet —
+            <b>pilot view</b> shows only the reports, all a crew actually has.
           </p>
           <p>
-            Click empty space to add a dog point. Click any point for its action bar: flip its class,
-            <b>tag it to trace</b> (it turns gold and its values flow through the Network and detail
-            panels), or remove it. Every edit changes the training data immediately.
+            File new reports with the chips: pick <b>+ ok</b> or <b>+ rough</b>, then click the
+            map to place it (<b>+ random</b> drops one anywhere) — each lands as a tail number
+            and grade before settling into its colored dot. Click any PIREP for
+            its action bar: <b>tag it to trace</b> (it turns gold and its values flow through the
+            Network and detail panels), or remove it. Every edit changes the training data
+            immediately.
           </p>
         </section>
 
-        <section class="side-card" id="desc-network">
-          <h3>Network</h3>
+        <section class="side-card" data-mode="epoch infer" id="desc-network">
+          <h3>Neural network</h3>
           <p>
             The architecture: input at the top, prediction at the bottom. Circles are each neuron's
             weighted sum (Σ w·x + b); the small boxes beneath are its activation stage; every line is
@@ -892,6 +1484,11 @@
             detail panel.
           </p>
         </section>
+
+        <div class="side-next">
+          <button type="button" class="next-chip" data-next="tabExplore">Next ▸</button>
+          <span class="side-next-label">Experiments to try on the net</span>
+        </div>
       </div>
 
       <div class="side-body" id="explorePane" role="tabpanel" hidden>
@@ -902,7 +1499,7 @@
         <section class="side-card">
           <h3>Watch a boundary being found</h3>
           <p>
-            Pick the <b>circle</b> data with region shading on, stay paused, and hit
+            Pick the <b>storm cell</b> weather in ATC view, stay paused, and hit
             <b>Reset weights</b> a few times. Each reset is a new random starting point — the shading
             shows each net's initial guess. Now train, and watch the loss drive the boundary around
             the clusters. Use <b>+1 / −1 epoch</b> to replay any moment in slow motion.
@@ -910,13 +1507,13 @@
         </section>
 
         <section class="side-card">
-          <h3>Give the spiral more capacity</h3>
+          <h3>Give the cyclone more capacity</h3>
           <p>
-            Switch to the <b>spiral</b>. With two hidden layers of 4 neurons the net often can't
-            capture the whole shape — some arms end up the wrong color. Drag the layer sliders up
-            (try 8 and 8) or add a third layer, then train again: the extra neurons give the net more
-            directions to fold space, enough to wrap the spiral. The filmstrip shows where the extra
-            capacity gets used.
+            Switch to the <b>cyclone</b>. With two hidden layers of 4 neurons the net often can't
+            capture the whole shape — some rain bands end up the wrong color. Drag the layer sliders
+            up (try 8 and 8) or add a third layer, then train again: the extra neurons give the net
+            more directions to fold space, enough to wrap the spiral bands. The filmstrip shows
+            where the extra capacity gets used.
           </p>
         </section>
 
@@ -943,6 +1540,11 @@
             <a href="https://cs.stanford.edu/people/karpathy/convnetjs/docs.html">library docs</a>.
           </p>
         </section>
+
+        <div class="side-next">
+          <button type="button" class="next-chip" data-next="tabDelve">Next ▸</button>
+          <span class="side-next-label">Follow one training pass, phase by phase</span>
+        </div>
       </div>
 
       <div class="side-body" id="delvePane" role="tabpanel" hidden>
@@ -955,19 +1557,20 @@
         <section class="side-card">
           <h3>Anatomy of one pass</h3>
           <p>
-            Click a data point and <b>tag it to trace</b>, then flip the mode chip to
+            Click a PIREP and <b>tag it to trace</b>, then flip the mode chip to
             <b>single pass</b>. The feature space steps aside and the network diagram becomes a
             stage. Press <b>Run</b>: <b>sample → forward → loss → backward → update</b>, each phase
             chip lighting up as it happens. The forward wave fills in each layer's values as it
-            arrives; pending layers stay dim. <b>Pause</b> freezes the animation and unlocks the
-            chips — click one to replay its phase. Esc returns to epoch mode.
+            arrives; pending layers stay dim. <b>Pause</b> freezes the animation and unlocks
+            <b>−1 / +1 step</b> — walk the phases at your own pace, in either direction.
+            Esc returns to epoch mode.
           </p>
         </section>
 
         <section class="side-card">
           <h3>Watch a mistake get corrected</h3>
           <p>
-            Tag a point sitting in the <b>wrong-colored region</b> and run a pass. At <b>loss</b>,
+            Tag a PIREP sitting in the <b>wrong-colored region</b> and run a pass. At <b>loss</b>,
             the true class's softmax box rings gold and the caption spells out
             loss = −log P(truth) — large when the net is confidently wrong. Then watch
             <b>update</b>: thick orange slashes the weights that fed the wrong answer through the
@@ -981,7 +1584,7 @@
           <p>
             During <b>backward</b>, each neuron's violet wash is its real share of the error —
             brighter means more responsibility. Now find a relu box showing <b>0.0</b>: that neuron
-            is “dead” for this sample, so no blame reaches it, and in the update phase its weights
+            is “dead” for this report, so no blame reaches it, and in the update phase its weights
             barely move. Learning flows only through neurons that actually fired. Click a dead
             neuron's circle afterwards to inspect its arithmetic.
           </p>
@@ -990,26 +1593,119 @@
         <section class="side-card">
           <h3>Loss shrinks pass by pass</h3>
           <p>
-            Hit <b>Run</b> several times on the same point and watch the loss in the
-            narration drop each round — you're over-fitting to one example in slow motion. Raise the
-            learning rate (in epoch mode) and repeat: bigger weight steps in the update phase,
-            faster drop, less stability. <b>undo pass</b> rewinds any pass you want to see again.
+            Let the run loop and watch the loss in the narration drop with each cycle — the same
+            PIREP, a little easier to grade every epoch. Raise the learning rate (in epoch mode)
+            and repeat: bigger weight steps in the update phase, faster drop, less stability.
+            <b>undo pass</b> rewinds any cycle you want to see again.
           </p>
         </section>
 
         <section class="side-card">
-          <h3>Confident points barely teach</h3>
+          <h3>Confident reports barely teach</h3>
           <p>
-            Tag a point deep inside a correctly-colored region and run a pass: P(truth) ≈ 1,
+            Tag a PIREP deep inside a correctly-colored region and run a pass: P(truth) ≈ 1,
             loss ≈ 0, and in <b>update</b> the connections barely glow — almost nothing changes.
-            Gradient descent spends its effort where it is wrong, which is why the points near the
+            Gradient descent spends its effort where it is wrong, which is why the reports near the
             boundary are the ones that shape the net.
           </p>
         </section>
+
+        <div class="side-next">
+          <button type="button" class="next-chip" data-next="tabDecide">Next ▸</button>
+          <span class="side-next-label">Turn the net's output into a divert call</span>
+        </div>
+      </div>
+
+      <div class="side-body" id="decidePane" role="tabpanel" hidden>
+        <p class="side-intro">
+          The inference layout, read as a flight-deck decision: should this flight divert,
+          and if so, how?
+        </p>
+
+        <section class="side-card">
+          <h3>The call</h3>
+          <p>
+            The rule from the flight deck: assuming fuel isn't an issue, a passenger flight takes
+            the fuel cost of a diversion for <b style="color:var(--cat)">moderate chop or worse
+            (grade 4–6)</b>, but rides out
+            <b style="color:var(--dog)">moderate turbulence or less (grade 1–3)</b>.
+            The net turns your waypoint into two probabilities, and the forecast readout
+            thresholds them into exactly that call: <b>stay on plan</b> when P(ok) wins,
+            <b>divert</b> when P(rough) does. A classifier's output isn't trivia — it exists to
+            be turned into a decision by someone with something at stake.
+          </p>
+        </section>
+
+        <section class="side-card">
+          <h3>Reading the screen</h3>
+          <p>
+            <b>Next waypoint</b> (left panel) is one point on your route ahead — click anywhere
+            to move it; the gold crosshair is where you're asking about. The <b>Waypoint</b>
+            readout gives its coordinates, and <b>Forecast</b> gives P(ok) · P(rough) and the
+            call, live as you move.
+          </p>
+          <p>
+            <b>Run</b> replays the question in slow motion: the waypoint's two coordinates flow
+            through the network diagram, layer by layer, until they become the two probabilities —
+            the same forward pass a deployed model runs, with the real numbers printed at every
+            neuron. <b>Pilot view / ATC view</b> toggles between what a crew actually has (the
+            reports) and the net's full forecast map.
+          </p>
+        </section>
+
+        <section class="side-card">
+          <h3>Flying the route</h3>
+          <p>
+            Train first — the forecast is only as good as the PIREPs it learned from. Then flip
+            to inference and walk your waypoint along the route you'd actually fly. Where
+            P(rough) spikes, probe sideways: in <b>ATC view</b> the divert answer is visible as a
+            corridor of blue. Try the <b>cyclone</b> weather and you'll find the honest answer is
+            sometimes not "go around everything" but "thread the gap between the bands" — and
+            sometimes, on <b>scattered</b> days, the net has nothing trustworthy to say at all.
+          </p>
+        </section>
+
+        <div class="side-next">
+          <button type="button" class="next-chip" data-next="tabIntro">Next ▸</button>
+          <span class="side-next-label">Back to the big picture</span>
+        </div>
       </div>
     </aside>
 
     </div><!-- /layout -->
+  </div>
+
+  <!-- one-off welcome modal: dismissed on any exit, never re-shown this load -->
+  <div class="intro-modal-backdrop" id="introModal" role="dialog" aria-modal="true"
+    aria-label="Welcome — how a neural net bends space">
+    <div class="intro-modal">
+      <button class="intro-modal-x" id="modalClose" type="button" aria-label="Close">✕</button>
+      <svg id="modalNet" class="intro-modal-fig" viewBox="0 0 580 260" aria-hidden="true"></svg>
+      <div class="intro-modal-body">
+        <h2>how a neural net bends space</h2>
+        <p class="mline mline-scene">
+          PIREPs — pilot ride reports — arrive one by one: a tail number, a turbulence grade 1–6,
+          a position. <b style="color:var(--dog)">blue · grade 1–3</b> (moderate turbulence at
+          worst) · <b style="color:var(--cat)">orange · grade 4–6</b> (moderate chop or worse) ·
+          grey · position only, no ride value. Every call fades to grey — a pilot hears the
+          reports but keeps no picture. The network is about to draw the map nobody can see.
+        </p>
+        <p class="mline">
+          short on time? for visual thrills, click
+          <button id="modalTrain" class="btn-primary" type="button">
+            <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M4 2.5v11l9-5.5z" />
+            </svg>
+            Train
+          </button>
+        </p>
+        <p class="mline">
+          if you've got more time — start with the
+          <button id="modalIntro" class="btn-primary" type="button">Intro</button>
+          Don’t forget to check out the other info tabs!
+        </p>
+      </div>
+    </div>
   </div>
 </body>
 

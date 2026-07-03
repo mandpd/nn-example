@@ -1,81 +1,289 @@
-# nn-example
+# nn-example · how a neural net bends space
 
-This is a slightly modified version of Andrej Kaparthy's convnetjs 2d example. See more about the original below. This page describes what the visualization shows and how to use the buttons to understand more.
+A tiny neural network learning to recognize patterns in data, live in your browser —
+a heavily re-imagined version of Andrej Karpathy's
+[classify2d demo](https://cs.stanford.edu/people/karpathy/convnetjs/demo/classify2d.html)
+from [convnetjs](https://cs.stanford.edu/people/karpathy/convnetjs/). The original
+convnetjs engine is used unmodified; everything around it — the scenario, the
+visualizations, the interaction model — is new.
 
-> To view, click [here](https://mandpd.github.io/nn-example/nn_example.html)
+> **To view, click [here](https://mandpd.github.io/nn-example/nn_example.html)**
 
-## What the page shows
+The sections below mirror the in-app **info tabs** (Intro · Describe · Explore ·
+Delve inside · Decide) in the side panel.
 
-The original example has been recast to illustrate how a neural network might model the structure in a set of images. The goal is to be able to distinguish the cat images in the [CIFAR-10](https://www.cs.toronto.edu/~kriz/cifar.html) image set from the dog images.
+---
 
-### The left-hand graph
+## Intro — the scenario
 
-In this example we are only using the first two grayscale pixel values from each image to train the neural net. The left-hand graph shows how the pixel values map onto a feature space with the first pixel value mapped on the vertical axis and the second pixel value mapped on the horizontal axis. Pixel values of zero map to the top-left corner of the graph.
+### What you're looking at
 
-You can use the data buttons below the graph to simulate different types of structure in the feature space. When first loaded, the feature space reflects a clear difference in the values of the pixels of dog images (colored green) compared with cat images (colored red) - the dog pixels cluster around the middle values of the pixel grayscales, while the cat pixels have larger or smaller values on the pixel grayscales. Visually this shows up as an inner circle of dog images surrounded by an outer circle of cat images.
+The setting is an airspace map. Aircraft ahead of you have been filing **PIREPs** —
+pilot reports of the ride, graded 1–6 from light turbulence to extreme. Grades
+**1–3** (up to moderate turbulence, shown blue) are tolerable for a passenger
+flight; grades **4–6** (moderate chop or worse, shown orange) are worth the fuel
+cost of a diversion. Each PIREP is just a position and a grade — a dot on a map.
+Turbulence is invisible; the only way to know about air nobody has flown through is
+to *infer* it from the reports around it.
 
-### The right-hand graph
+Each PIREP is one dot at position (x₁ = km east, x₂ = km north). The network's
+whole job is to reconstruct the turbulence pattern from those scattered reports — a
+real image classifier does the same thing with millions of inputs instead of two;
+we use two so you can watch every step of it happen. The question the net exists to
+answer: **should the flight divert — and if so, how?**
 
-If the neural net can discover this structure, then it can use it to predict the classification of images (dog vs cat) that it has not yet seen, assuming that the pattern in this training data is a reflection of the same structure in the image population as a whole.
+### Training vs. running
 
-The right-hand graph provides a window into the layers that make up the neural net. The buttons below the graph allow you to switch the window between the layers that make up the neural net.
+A network's life has two phases. **Training**: show it PIREPs whose ride is known,
+measure how wrong its map is (the *loss*), and nudge every weight to be slightly
+less wrong — then repeat, thousands of times. **Running** (inference): freeze the
+weights and ask the finished net about waypoints nobody has reported on. The two
+mode panels at the top right of the page mirror exactly this split — and this is
+the answer to "why not just use the forecast?": every forecast map *is* the output
+of a model like this one; the ground truth underneath is always scattered point
+reports.
 
-Each layer of the neural net is made up of a collection of neurons that receive input from the previous layer, modify the input values by linear (affine) transformations of the input space, and apply an activation function to the values that introduce non-linear transformations to the input space. The resulting output space of values is then forwarded to the next layer for processing.
+### Three modes, three insights
 
-The 'cycle' button cycles through the neurons in the selected layer showing how the feature space is processed by each neuron.
+- **Epoch** — training at full speed. Watch the forecast boundary form on the
+  airspace map, the loss fall, and each layer bend space in the filmstrip. This is
+  also where you shape the experiment: file new PIREPs, change the weather pattern,
+  the layers, the activation, the rates.
+- **Single pass** — training in slow motion. One PIREP's forward pass, loss,
+  backprop and weight update play out over an enlarged network diagram, phase by
+  phase, with the real numbers. This is where the learning rule itself becomes
+  visible.
+- **Inference** — the trained net at work. Place a waypoint anywhere on the map and
+  watch the forward pass turn it into P(ok) and P(rough) — and a call: stay on
+  plan, or divert. Nothing learns here; this is what "using a model" means.
 
+### Finding your way
 
-### The reset button
+Nearly everything on the page is clickable. In any mode, click the **background of
+a panel** and the **Describe** tab jumps to that panel's card — the cards change
+with the mode, so click around in each one. Click **circles, connections and
+activation boxes** in the network diagram, or any **filmstrip stage**, to open its
+detail view. The **Explore** tab holds guided experiments; the **Delve inside** tab
+is a set of directed walkthroughs for single-pass mode, one phase of the learning
+rule at a time.
 
-The neural net can be reset by clicking the reset button in the player controls section. Random values are chosen for the starting position of the net. You will notice that the resulting rotations and skews to the feature space change each time you reset the net.
+---
 
-### Running the model for first time 
+## Describe — what each panel shows
 
-First time through it can be most instructive to select the final layer to view. This is annotated (fc2). This final layer includes a logistic classifier, (the default is 'softmax'), which converts the final output space into a probability that the net has assigned to each original datapoint as to whether it is from a dog image or a cat image. The probability of the datapoint being from a dog image is shown on the vertical axis. The probability runs from 0 (definitely not a dog image), to 1 (definitely a dog image). Similarly the horizontal axis shows the cat image probability between 0 and 1.
+### Controls
 
-A perfect classification of the training data would have all the dog datapoints (colored green) at one corner and all the cat datapoints (colored red) at the other corner. However, we need the net to also classify data that it has not seen. If the net is too tightly bound to the training data, any variations in new data might cause it to mis-classify the data. For this reason the optimal distribution will achieve a clear boundary between the different classes of datapoints that, if we could reverse the prediction space back into the original feature space, would map onto the major structure(s) in the original feature space. One of the benefits of the convnetjs library is that we can indeed do this as will be shown later.
+Everything that defines the experiment. **Train** runs gradient descent
+continuously; while paused, **+1 / −1 epoch** step training forward one pass at a
+time or rewind it — weights, loss and the epoch counter are restored exactly. The
+**mode** chips switch between epoch, single pass, and inference. **Reset weights**
+starts over from new random values.
 
-### The play/pause button
+**Weather** swaps the pattern behind the PIREPs — front, storm cell, cyclone bands,
+or patternless scattered convection. The **hidden layers** sliders and the
+**activation** menu change the architecture and rebuild the net from scratch. The
+**learning rate, momentum, batch size and L2** sliders retune the optimizer live,
+without touching what has been learned — watch the loss history react.
 
-The model can be started and paused by clicking the play/pause button in the player controls section. Once the model is started it will begin to analyze the input datapoints shown in the left-hand graph. It will run the datapoints through the neural network layers creating a modified prediction. This modified prediction is evaluated for its quality using a loss function (the default is 'SGDTrainer') which creates feedback information that propagates back through the layers, modifying the transformation and threshold values in each layer in order to improve the predictions. The datapoints are then run through the modified neural net, and the process repeated. The value of the loss function is shown at the top of the graph and is updated on each pass, known as an epoch, through the net.
+Once a run starts, the page title gives way to the epoch timeline, and the dataset
+and architecture controls fade and lock until **Reset weights**. What can still be
+clicked keeps its raised background.
 
-Once the model is running you will see the shape of the prediction space changes as the loss function evaluates and the weights and thresholds are modified. You will notice after a certain time the space is not changing, or is changing very slightly. At this point you should see the red datapoints clustered closely together or at one corner of the graph, and the green datapoints similarly clustered closer to the other corner of the graph.
+### Epoch timeline
 
-You can now press the play/pause button to stop the neural net iterating further. 
+Takes the title's place once a run starts. The gold line is **now**: every panel on
+the page is a snapshot of this exact moment in an evolving training process. The
+scale stretches as the epoch count climbs, and "paused" marks a frozen simulation.
+The violet trail unrolling behind the now-line is the **loss** — the average error
+the training is pushing down, drawn against the run's own worst value.
+**+1 / −1 epoch** move the now-line with them — including backwards. While paused
+you can also **drag the now-line** itself: scrub back through the recorded history
+(about the last 200 snapshots) and forward again — every panel follows live, and
+letting go commits the run to that moment.
 
-### Visualize the classification boundary on the original feature space
+### Airspace map (feature space)
 
-By clicking on the toggle button that shows 'off' you can enable a visualization of how the prediction space maps back onto the original feature space. This illustrates how this version of the neural net would classify new datapoints based on their first two pixel values.
+The map is the net's feature space: every position is a possible input
+(x₁ = km east, x₂ = km north); each dot is one PIREP — blue ok (grade 1–3), orange
+divert-grade (4–6). In **ATC view**, the background shows the ride the net
+currently forecasts everywhere; the decision boundary is where the colors meet —
+**pilot view** shows only the reports, all a crew actually has.
 
-### Using the model to classify unseen images
+File new reports with the chips: pick **+ ok** or **+ rough**, then click the map
+to place it (**+ random** drops one anywhere) — each lands as a tail number and
+grade before settling into its colored dot. Click any PIREP for its action bar:
+**tag it to trace** (it turns gold and its values flow through the Network and
+detail panels), or remove it. Every edit changes the training data immediately.
 
-When a new data point's pixel values are plotted on this left-hand graph, if the point is within the red (green) prediction space the model would predict that the data point is from a cat (dog) image.
+### Neural network
 
-If the structure that the neural net has found is indeed present in the image population as a whole, then we can expect it to be a good classifier of unseen cat and dog images.
+The architecture: input at the top, prediction at the bottom. Circles are each
+neuron's weighted sum (Σ w·x + b); the small boxes beneath are its activation
+stage; every line is one learned weight — blue positive, orange negative,
+thicker = stronger — redrawn live as the net trains.
 
-### Discovering more about how the neural net works
+Click a **circle** to open that neuron's arithmetic, a **line** to inspect a single
+weight, an **activation box** or a row label to see how that stage warps space.
+While a component is selected, the traced point's actual values are printed at
+every stage of the diagram.
 
-Try the following to get further insights into how the neural net behaves:
+### Layer space (detail)
 
-1. Using the circle data with the prediction colors toggled 'On' and the model paused, try resetting the model multiple times.
-Each time the model is reset the neural net begins with a new set of random values. The prediction colors show the initial prediction of the model. If you now play the model you can see how for each epoch of the network the prediction space changes. You'll see how the loss function drives the prediction boundary around clusters of similar classed data points.
+Shows whatever is selected. For a **layer**: how it reshapes the previous stage's
+output — the warped grid with real value axes and the data points carried along.
+For a **neuron**: its inputs, weights, bias, activation curve and fan-out, computed
+for the traced point. For a **weight**: its value, sign and contribution. When a
+layer has more than two neurons, the ⟳ button cycles which pair forms the axes.
 
-2. Do the same with the spiral data.
-You should find that on some runs of the model it is unable to identify all parts of the spiral structure. This is because the neural net is not able to model the more complex structure with its existing layers. The text area at the bottom left describes the composition of the neural network model that's being used. You can try pausing the model, modifying this description, resetting the model, and then playing the model again. The model will now evolve using the new neural network that you have described.
-For example, you can increase the number of neurons in the first and second hidden layers by changing the current `num_neurons` value of 4 to 16. If you run this model, you should find that the additional complexity in the hidden layers is sufficient to capture the more complex structure in the spiral data.
+### The network, layer by layer
 
-3. Try further modifications to see their effect on how the neural net evolves. You can try modifying the activation function (default is 'relu'), classifier (the default is 'softmax'), and optimizer (the default is 'SGDtrainer'), along with all the paramters associated with the layers and optimizer.
+The whole forward pass as a filmstrip: each thumbnail is the same square of space
+after one more stage. Linear layers rotate, scale and shear it; activations fold
+(relu) or squash (tanh, sigmoid) it; softmax lines everything up on the probability
+diagonal. Read left to right to watch the two classes come apart. Click any stage
+to open it in the detail panel.
 
-4. Explore the rest of the examples of the convnetjs library. You can even see how a convolutional neural network (which incorporates the types of layers in this model along with additional layer types that help to improve the image classification) does against the CIFAR-10 dataset itself, [here](https://cs.stanford.edu/people/karpathy/convnetjs/demo/cifar10.html) (Warning - this can overwhelm lower powered systems).
+### Single pass — run controls and the stage
 
-## Original Article
+**Run** follows the traced (gold) PIREP through training, and like epoch mode it
+never stops on its own: each cycle animates that report's real training step —
+**sample → forward → loss → backward → update**, batch size forced to 1 — then
+fast-forwards the rest of the epoch in the background and rolls straight into the
+next one. **Pause** freezes it and unlocks **−1 / +1 step**: walk the animation
+backwards and forwards one step at a time while the phase chips light up to show
+where you are. At the first step the back button reads **Prior epoch** and rewinds
+into the end of the previous epoch's pass; at the final step the forward button
+reads **Next epoch** and rolls into the next one, still paused. **undo pass**
+rewinds one whole cycle. The narration line spells out what the current phase is
+doing, with the real numbers.
 
-You can see the original visualization by clicking on the 'Source' link on the example page, or clicking [here](https://cs.stanford.edu/people/karpathy/convnetjs/demo/classify2d.html).
+On the expanded network diagram: during **forward**, each row lights up as the
+sample's real activations arrive; **loss** rings the reported grade's softmax box
+and prints −log P(truth); **backward** washes neurons violet by their share of the
+blame; **update** redraws the connections that just changed — blue got stronger,
+orange got weaker, thickness shows how much. Everything stays clickable mid-pass.
 
-For more information on how the description of the neural net is composed, please consult the original convnetjs [documentation](https://cs.stanford.edu/people/karpathy/convnetjs/docs.html).
+### Inference
 
-## This Repo
+Training is frozen — this mode asks the net for the ride ahead. The airspace map
+becomes a single **waypoint** on your route: click anywhere to move it, and the
+forecast readout updates instantly with P(ok) and P(rough) from the current
+weights — plus the call a passenger flight would make: **stay on plan**, or
+**divert**. **Run** animates the forward pass — the waypoint's two coordinates
+travel layer by layer through the network diagram until they become the two
+probabilities. Nothing trains, no loss, no gradients: this is the whole life of a
+deployed network.
 
-## Running the Example
+---
 
-Download the [repo](https://github.com/mandpd/nn-example) and open the nn_example.html file in a web browser
+## Explore — experiments to try
+
+**Watch a boundary being found.** Pick the **storm cell** weather in ATC view, stay
+paused, and hit **Reset weights** a few times. Each reset is a new random starting
+point — the shading shows each net's initial guess. Now train, and watch the loss
+drive the boundary around the clusters. Use **+1 / −1 epoch** to replay any moment
+in slow motion.
+
+**Give the cyclone more capacity.** Switch to the **cyclone**. With two hidden
+layers of 4 neurons the net often can't capture the whole shape — some rain bands
+end up the wrong color. Drag the layer sliders up (try 8 and 8) or add a third
+layer, then train again: the extra neurons give the net more directions to fold
+space, enough to wrap the spiral bands. The filmstrip shows where the extra
+capacity gets used.
+
+**Change the ingredients.** Train the same data under each **activation** and
+compare filmstrips: relu creases the grid along straight lines, tanh and sigmoid
+bend it smoothly. Then abuse the optimizer: a learning rate 10× higher or lower,
+momentum 0.9, batch size 1 versus 50, heavy L2 decay. The rate sliders apply live,
+so the loss history shows each change's effect instantly.
+
+**Beyond this demo.** Explore the
+[other convnetjs examples](https://cs.stanford.edu/people/karpathy/convnetjs/) —
+including a full convolutional network classifying the real
+[CIFAR-10 images](https://cs.stanford.edu/people/karpathy/convnetjs/demo/cifar10.html)
+(heavy on slower machines) — or read the
+[library docs](https://cs.stanford.edu/people/karpathy/convnetjs/docs.html).
+
+---
+
+## Delve inside — one training pass, up close
+
+All of these use **single pass** mode. Every number it shows is captured from one
+real batch-size-1 training step, not a simulation.
+
+**Anatomy of one pass.** Click a PIREP and **tag it to trace**, then flip the mode
+chip to **single pass**. The feature space steps aside and the network diagram
+becomes a stage. Press **Run**: sample → forward → loss → backward → update, each
+phase chip lighting up as it happens. Pause and use **−1 / +1 step** to walk the
+phases at your own pace, in either direction. Esc returns to epoch mode.
+
+**Watch a mistake get corrected.** Tag a PIREP sitting in the wrong-colored region
+and run a pass. At **loss**, the true class's softmax box rings gold and the
+caption spells out loss = −log P(truth) — large when the net is confidently wrong.
+Then watch **update**: thick orange slashes the weights that fed the wrong answer
+through the active neurons, while thick blue reinforces the path toward the right
+one. That is the whole learning rule, drawn.
+
+**Blame only flows through live neurons.** During **backward**, each neuron's
+violet wash is its real share of the error — brighter means more responsibility.
+Find a relu box showing 0.0: that neuron is "dead" for this report, so no blame
+reaches it, and in the update phase its weights barely move. Learning flows only
+through neurons that actually fired.
+
+**Loss shrinks pass by pass.** Let the run loop and watch the loss in the narration
+drop with each cycle — the same PIREP, a little easier to grade every epoch. Raise
+the learning rate (in epoch mode) and repeat: bigger weight steps in the update
+phase, faster drop, less stability. **undo pass** rewinds any cycle you want to see
+again.
+
+**Confident reports barely teach.** Tag a PIREP deep inside a correctly-colored
+region and run a pass: P(truth) ≈ 1, loss ≈ 0, and in **update** the connections
+barely glow — almost nothing changes. Gradient descent spends its effort where it
+is wrong, which is why the reports near the boundary are the ones that shape the
+net.
+
+---
+
+## Decide — the inference layout as a flight-deck decision
+
+**The call.** The rule from the flight deck: assuming fuel isn't an issue, a
+passenger flight takes the fuel cost of a diversion for **moderate chop or worse
+(grade 4–6)**, but rides out **moderate turbulence or less (grade 1–3)**. The net
+turns your waypoint into two probabilities, and the forecast readout thresholds
+them into exactly that call: **stay on plan** when P(ok) wins, **divert** when
+P(rough) does. A classifier's output isn't trivia — it exists to be turned into a
+decision by someone with something at stake.
+
+**Reading the screen.** **Next waypoint** (left panel) is one point on your route
+ahead — click anywhere to move it; the gold crosshair is where you're asking about.
+The **Waypoint** readout gives its coordinates, and **Forecast** gives
+P(ok) · P(rough) and the call, live as you move. **Run** replays the question in
+slow motion — the same forward pass a deployed model runs, with the real numbers
+printed at every neuron. **Pilot view / ATC view** toggles between what a crew
+actually has (the reports) and the net's full forecast map.
+
+**Flying the route.** Train first — the forecast is only as good as the PIREPs it
+learned from. Then flip to inference and walk your waypoint along the route you'd
+actually fly. Where P(rough) spikes, probe sideways: in ATC view the divert answer
+is visible as a corridor of blue. Try the **cyclone** weather and you'll find the
+honest answer is sometimes not "go around everything" but "thread the gap between
+the bands" — and sometimes, on **scattered** days, the net has nothing trustworthy
+to say at all.
+
+---
+
+## Origins
+
+This is a re-imagining of Andrej Karpathy's
+[classify2d demo](https://cs.stanford.edu/people/karpathy/convnetjs/demo/classify2d.html)
+for the [convnetjs](https://cs.stanford.edu/people/karpathy/convnetjs/) library.
+The convnetjs engine (`js/convnet/convnet.js`) is included unmodified and does all
+the actual training and inference; see the
+[convnetjs documentation](https://cs.stanford.edu/people/karpathy/convnetjs/docs.html)
+for how nets are defined and trained.
+
+## Running the example
+
+Download the [repo](https://github.com/mandpd/nn-example) and open
+`nn_example.html` in a web browser. There are no build steps and no external
+dependencies — it works offline.

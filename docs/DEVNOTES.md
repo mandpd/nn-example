@@ -25,9 +25,13 @@ changing `nn_example.html` / `js/nn_example.js`.
   uses explicit `Float64Array` copies (`weightsSnapshot` / `weightsRestore`).
 - **Canvas ↔ flex/grid feedback loop**: `fitCanvas()` sets the canvas backing size to
   rect × devicePixelRatio. If a canvas's intrinsic size can influence its container's
-  size, the layout inflates on every render. Hence the timeline card is
-  `position: absolute` over the header's box, and the pass-mode network canvas has a
-  fixed `clamp()` height. Never let these canvases participate in intrinsic sizing.
+  size, the layout inflates on every render (≈1px/tick creep, or worse on dpr 2).
+  Hence the timeline card is `position: absolute` over the header's box, and the
+  network canvas is `position: absolute; inset: 0` inside `.arch-wrap`, which owns all
+  layout sizing (flex fill / pass-mode `clamp()` height / narrow-width aspect-ratios).
+  `height: 0` or `min-height: 0` on the canvas is NOT enough — only absolute
+  positioning fully removes it from intrinsic sizing. Never let a `fitCanvas` canvas
+  participate in layout.
 - **Jog-free swaps**: the toolbar's epoch/pass control sets share one grid cell
   (`.toolbar-stack`, both children `grid-area: 1/1`) toggled with `visibility`, so the
   toolbar height is the max of both by construction. The header/timeline swap uses the
@@ -46,5 +50,14 @@ changing `nn_example.html` / `js/nn_example.js`.
   `trainer.train()` call: `out_act.w` per layer (activations), `out_act.dw` (per-neuron
   gradients — the param update zeroes filter grads but not these), and pre/post weight
   deltas for the update phase.
+- **"Prior epoch" replays, it doesn't store**: stepping back across a pass boundary
+  double-`stepBack()`s (undo this pass's sample update, then the previous epoch) and
+  re-runs `startPass()` frozen at 'done'. That reconstruction is bit-identical only
+  because every pass uses a *fresh* temp Trainer (no momentum memory carried over) and
+  `probeIndex()` is deterministic. Don't make either stateful.
+- **The timeline now-line is draggable** (epoch mode, paused): scrubbing previews
+  history snapshots without popping them; only pointerup commits (`history.slice(0,k)`
+  + `buildTrainer()`). During a drag the axis ceiling and loss-trail y-scale are pinned
+  to the run's true tip so the chart doesn't rescale under the pointer.
 - **Automation/testing**: browser-tool screenshots can be scaled — click coordinates are
   screenshot-space, not CSS pixels; convert via image-width / `innerWidth`.

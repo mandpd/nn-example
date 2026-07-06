@@ -158,6 +158,18 @@ gold dot sits on the surface at the current weights' own loss, and the white rin
 marks the lowest surveyed vertex. Train and watch the bowl deepen while the dot
 rolls to its floor — gradient descent, literally.
 
+### Log book tab
+
+Every flight keeps a log. The **camera button** in the detail panel's header files
+a snapshot of whichever view is up — layer space, loss map (2d) or (3d) — as a
+pixel copy *plus every setting that produced it*: epoch, loss, weather,
+architecture, activation, and the optimizer dials. The **log book** tab plays the
+entries back as a slideshow: ‹ › to page, ▶ to auto-advance, **save** to download
+the PNG, **remove** to tear out a page. Entries persist in your browser between
+visits (up to 24 — oldest pages fall out first). Use it to compare runs that no
+longer exist: two different random starts, the same weather at two learning rates,
+the landscape before and after a long train.
+
 ### The network, layer by layer
 
 The whole forward pass as a filmstrip: each thumbnail is the same square of space
@@ -280,6 +292,15 @@ end up the wrong color. Drag the layer sliders up (try 8 and 8) or add a third
 layer, then train again: the extra neurons give the net more directions to fold
 space, enough to wrap the spiral bands. The filmstrip shows where the extra
 capacity gets used.
+
+**Two resets, two valleys.** The loss surface has many minima, and where a net
+lands depends on where it starts. Train on the **storm cell** until the loss
+flattens, open the **loss map (2d)** or **(3d)** tab, and press the **camera** to
+file the settled landscape in the log book. Now **Reset weights** — a new random
+start — train again, and snapshot again. Open the **log book** tab and flip
+between the two entries: same data, same architecture, two different valleys,
+often with visibly different decision boundaries on the airspace map. That's why
+practitioners train with several seeds.
 
 **Change the ingredients.** Train the same data under each **activation** and
 compare filmstrips: relu creases the grid along straight lines, tanh and sigmoid

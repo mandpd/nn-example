@@ -582,7 +582,7 @@ function setMode(m) {
   $('#panelDescent').hidden = m === 'infer';
   $('#detTabDescent').hidden = m === 'infer';
   $('#detTabDescent3d').hidden = m === 'infer';
-  if (m === 'infer' && detailTab !== 'layer') detailTab = 'layer';
+  if (m === 'infer' && (detailTab === 'descent' || detailTab === 'descent3d')) detailTab = 'layer';
   detailApplyTab();
   $('#describePane').dataset.mode = m; // Describe cards follow the visible panels
   // the side panel follows the mode: inference opens the decision guide
@@ -2640,6 +2640,11 @@ const DETAIL_TABS = {
     note: '(drag to rotate · see below for a description of this landscape)',
     title: 'Gradient descent · loss surface',
   },
+  logbook: {
+    btn: '#detTabLogbook', cv: '#logbookBody', hint: '#logbookHint',
+    note: '(saved views with the settings that made them — file one with the camera above)',
+    title: 'Log book',
+  },
 };
 
 function detailApplyTab() {
@@ -2657,6 +2662,10 @@ function detailApplyTab() {
   } else {
     updateSelectionUI(); // restores the selection's title, hint and ⟳ button
   }
+  // the camera photographs the other tabs; on the log book it has no subject
+  $('#snapBtn').hidden = detailTab === 'logbook';
+  if (detailTab === 'logbook') renderLogbook();
+  else stopLogbookPlay();
   requestRender();
 }
 
@@ -2884,6 +2893,139 @@ function drawDescent3DInto(cv) {
   ctx.fillText('d₂ →', bx, by);
   ctx.textAlign = 'left';
   ctx.fillText('loss ↑ · drag to rotate', 12, 18);
+}
+
+/* ---------------- log book: snapshots of the detail views ----------------
+   The camera button files a pixel copy of whichever detail view is up, plus
+   every setting that produced it. Entries persist in localStorage (oldest
+   pages fall out first on quota) and play back as a slideshow in the
+   log book tab. */
+const LOGBOOK_KEY = 'nn-example-logbook';
+const LOGBOOK_CAP = 24;
+const WEATHER_NAME = { simple: 'front', circle: 'storm cell', spiral: 'cyclone', random: 'scattered' };
+let logbook = [];
+let logIndex = -1;
+let logPlayTimer = null;
+
+function loadLogbook() {
+  try { logbook = JSON.parse(localStorage.getItem(LOGBOOK_KEY) || '[]'); }
+  catch { logbook = []; }
+  if (!Array.isArray(logbook)) logbook = [];
+  logIndex = logbook.length - 1;
+}
+
+function saveLogbook() {
+  for (;;) {
+    try { localStorage.setItem(LOGBOOK_KEY, JSON.stringify(logbook)); return; }
+    catch {
+      if (!logbook.length) return; // storage unavailable: keep in-memory only
+      logbook.shift();
+      logIndex = Math.max(0, logIndex - 1);
+    }
+  }
+}
+
+function takeSnapshot() {
+  if (detailTab === 'logbook') return;
+  const cv = $(DETAIL_TABS[detailTab].cv);
+  // store at most 512px on a side — plenty for playback, kind to the quota
+  const scale = Math.min(1, 512 / (cv.width || 1));
+  const out = document.createElement('canvas');
+  out.width = Math.max(1, Math.round(cv.width * scale));
+  out.height = Math.max(1, Math.round(cv.height * scale));
+  out.getContext('2d').drawImage(cv, 0, 0, out.width, out.height);
+  logbook.push({
+    img: out.toDataURL('image/png'),
+    t: Date.now(),
+    view: detailTab === 'layer' ? $('#layerTitle').textContent
+      : detailTab === 'descent' ? 'loss map (2d)' : 'loss map (3d)',
+    mode: state.mode,
+    epoch: state.epoch,
+    loss: state.loss,
+    weather: state.dataset,
+    hidden: state.hidden.slice(),
+    activation: state.activation,
+    lr: state.lr,
+    momentum: state.momentum,
+    batch: state.batch,
+    l2: state.l2,
+    points: data.length,
+    r: detailTab !== 'layer' && descent ? +descent.r.toFixed(2) : null,
+  });
+  if (logbook.length > LOGBOOK_CAP) logbook.shift();
+  logIndex = logbook.length - 1;
+  saveLogbook();
+  // acknowledge without yanking the user over to the tab
+  const btn = $('#snapBtn');
+  btn.classList.add('flash');
+  setTimeout(() => btn.classList.remove('flash'), 700);
+}
+
+function renderLogbook() {
+  const n = logbook.length;
+  $('#layerTitle').textContent = n ? `Log book · ${n} ${n === 1 ? 'entry' : 'entries'}` : 'Log book';
+  $('#logbookPhoto').hidden = !n;
+  $('#logbookEmpty').hidden = !!n;
+  $('#logbookBar').hidden = !n;
+  if (!n) { $('#logbookHint').textContent = ''; return; }
+  logIndex = Math.max(0, Math.min(logIndex, n - 1));
+  const e = logbook[logIndex];
+  $('#logbookPhoto').src = e.img;
+  $('#lbCount').textContent = `${logIndex + 1} / ${n}`;
+  $('#lbPrev').disabled = n < 2;
+  $('#lbNext').disabled = n < 2;
+  $('#lbPlay').disabled = n < 2;
+  const d = new Date(e.t);
+  const clock = `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+  const b = (v) => `<b>${v}</b>`;
+  $('#logbookHint').innerHTML =
+    `${clock} · ${b(e.view)}<br>`
+    + `epoch ${b(e.epoch.toLocaleString())} · loss ${b(e.loss == null ? '—' : e.loss.toFixed(4))} · `
+    + `${b(WEATHER_NAME[e.weather] || e.weather)} · layers ${b(e.hidden.join('·') || 'none')} · ${b(e.activation)}<br>`
+    + `lr ${b(e.lr)} · momentum ${b(e.momentum.toFixed(2))} · batch ${b(e.batch)} · L2 ${b(e.l2)} · `
+    + `${b(e.points)} pireps${e.r ? ` · slice ±${b(e.r)}` : ''}`;
+}
+
+function stopLogbookPlay() {
+  if (!logPlayTimer) return;
+  clearInterval(logPlayTimer);
+  logPlayTimer = null;
+  $('#lbPlay').textContent = '▶';
+}
+
+function toggleLogbookPlay() {
+  if (logPlayTimer) { stopLogbookPlay(); return; }
+  if (logbook.length < 2) return;
+  $('#lbPlay').textContent = '❚❚';
+  logPlayTimer = setInterval(() => {
+    logIndex = (logIndex + 1) % logbook.length;
+    renderLogbook();
+  }, 2500);
+}
+
+function logbookStep(dir) {
+  stopLogbookPlay();
+  if (logbook.length < 2) return;
+  logIndex = (logIndex + dir + logbook.length) % logbook.length;
+  renderLogbook();
+}
+
+function downloadLogbookEntry() {
+  const e = logbook[logIndex];
+  if (!e) return;
+  const a = document.createElement('a');
+  a.href = e.img;
+  a.download = `logbook-${logIndex + 1}-${e.view.replace(/[^a-z0-9]+/gi, '-')}.png`;
+  a.click();
+}
+
+function removeLogbookEntry() {
+  stopLogbookPlay();
+  if (logIndex < 0 || !logbook.length) return;
+  logbook.splice(logIndex, 1);
+  logIndex = Math.min(logIndex, logbook.length - 1);
+  saveLogbook();
+  renderLogbook();
 }
 
 /* drag on the 3-d canvas orbits the camera */
@@ -3327,7 +3469,8 @@ function initSidePanel() {
     panelFeature: () => (state.mode === 'infer' ? 'desc-infer' : 'desc-feature'),
     panelNetwork: () => (state.mode === 'pass' ? 'desc-pass-network' : 'desc-network'),
     panelDetail: () => (detailTab === 'descent' ? 'desc-detail-2d'
-      : detailTab === 'descent3d' ? 'desc-detail-3d' : 'desc-detail'),
+      : detailTab === 'descent3d' ? 'desc-detail-3d'
+        : detailTab === 'logbook' ? 'desc-logbook' : 'desc-detail'),
     panelPipeline: () => 'desc-pipeline',
     panelDescent: () => 'desc-descent',
     timeline: () => 'desc-timeline',
@@ -3358,6 +3501,7 @@ function initSidePanel() {
     'desc-detail': ['panelDetail'],
     'desc-detail-2d': ['panelDetail'],
     'desc-detail-3d': ['panelDetail'],
+    'desc-logbook': ['panelDetail'],
     'desc-pipeline': ['panelPipeline'],
     'desc-descent': ['panelDescent'],
   };
@@ -3661,7 +3805,15 @@ function init() {
   wireDetailTab('#detTabLayer', 'layer', 'desc-detail');
   wireDetailTab('#detTabDescent', 'descent', 'desc-detail-2d');
   wireDetailTab('#detTabDescent3d', 'descent3d', 'desc-detail-3d');
+  wireDetailTab('#detTabLogbook', 'logbook', 'desc-logbook');
   initDescent3dDrag();
+  loadLogbook();
+  $('#snapBtn').addEventListener('click', takeSnapshot);
+  $('#lbPrev').addEventListener('click', () => logbookStep(-1));
+  $('#lbNext').addEventListener('click', () => logbookStep(1));
+  $('#lbPlay').addEventListener('click', toggleLogbookPlay);
+  $('#lbDownload').addEventListener('click', downloadLogbookEntry);
+  $('#lbRemove').addEventListener('click', removeLogbookEntry);
   initSidePanel();
   initModal();
   initFullscreen();

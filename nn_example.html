@@ -1213,9 +1213,9 @@
             <button id="detTabLayer" class="side-tab" type="button" role="tab"
               aria-selected="true">layer space</button>
             <button id="detTabDescent" class="side-tab" type="button" role="tab"
-              aria-selected="false">loss map</button>
+              aria-selected="false">loss map (2d)</button>
             <button id="detTabDescent3d" class="side-tab" type="button" role="tab"
-              aria-selected="false">3-d</button>
+              aria-selected="false">loss map (3d)</button>
           </div>
         </header>
         <p class="tab-note" id="detailTabNote">(select the layer to view from the selection in the panel below)</p>
@@ -1609,9 +1609,11 @@
             When a layer has more than two neurons, the ⟳ button cycles which pair forms the axes.
           </p>
           <p>
-            The panel's second tab, <b>loss landscape</b>, holds a copy of the gradient-descent map
-            from the panel at the bottom of the page — handy for watching the dot descend while a
-            run plays. Selecting any layer, neuron or weight flips back to the first tab.
+            The panel's other tabs hold the gradient-descent landscape: <b>loss map (2d)</b> is a
+            copy of the map from the panel at the bottom of the page, and <b>loss map (3d)</b>
+            renders the same surface with the loss as height — drag it to rotate. Handy for
+            watching the dot descend while a run plays. Selecting any layer, neuron or weight
+            flips back to the first tab.
           </p>
         </section>
 

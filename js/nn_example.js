@@ -3506,9 +3506,14 @@ function randTail() {
     + String.fromCharCode(65 + Math.floor(Math.random() * 26));
 }
 
+const MODAL_SEEN_KEY = 'nn-example-intro-seen';
+
 function dismissModal(followUp) {
   $('#introModal').classList.add('dismissed');
   clearModalTimers();
+  // remember across visits: the modal is first-run only ("replay video"
+  // brings it back on demand)
+  try { localStorage.setItem(MODAL_SEEN_KEY, '1'); } catch { /* private mode */ }
   // the follow-up (start training, highlight the intro, ...) waits until the
   // full-screen switch has played out, so it isn't competing for the eye
   fsAttention(followUp);
@@ -3538,7 +3543,10 @@ function initModal() {
   // no backdrop or Esc dismissal: leaving the modal is an explicit choice
   // (✕, Train, or Intro)
   $('#replayBtn').addEventListener('click', showModal);
-  showModal();
+  let seen = false;
+  try { seen = localStorage.getItem(MODAL_SEEN_KEY) === '1'; } catch { /* private mode */ }
+  if (seen) $('#introModal').classList.add('dismissed');
+  else showModal();
 }
 
 /* ---------------- full-screen banner ---------------- */

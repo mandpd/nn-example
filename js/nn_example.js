@@ -61,6 +61,7 @@ let archNodes = [];        // network-diagram nodes {x, y, rowIdx, j}
 let archEdges = [];        // network-diagram edges {x1,y1,x2,y2, rowIdx, i, j}
 let archActs = [];         // network-diagram activation bands {y, rowIdx, actIdx, xMin, xMax}
 let archMatX = Infinity;   // left edge of the pass-mode matrix panel (clicks beyond it are ignored)
+let showDescribeCard = null; // set by initSidePanel: jump to a Describe card + flash its panel
 
 const LR_STEPS = [0.0003, 0.001, 0.003, 0.01, 0.03, 0.1, 0.3];
 const L2_STEPS = [0, 0.0001, 0.001, 0.01];
@@ -2390,7 +2391,13 @@ function segDist(px, py, x1, y1, x2, y2) {
 
 function onArchClick(e) {
   const px = e.offsetX, py = e.offsetY;
-  if (px >= archMatX) return; // the matrix panel is display-only
+  if (px >= archMatX) {
+    // the matrix strip is display-only — explain it instead
+    if (state.mode === 'pass' && showDescribeCard) {
+      showDescribeCard('desc-pass-matrix', 'panelNetwork');
+    }
+    return;
+  }
   for (const n of archNodes) {
     if ((px - n.x) ** 2 + (py - n.y) ** 2 <= 13 * 13) { selectNode(n.rowIdx, n.j); return; }
   }
@@ -2411,7 +2418,11 @@ function onArchClick(e) {
     const d = Math.abs(py - archRows[i].y);
     if (d < bestD) { bestD = d; best = i; }
   }
-  if (best >= 0) selectLayer(archRows[best].idxs[0]);
+  if (best >= 0) { selectLayer(archRows[best].idxs[0]); return; }
+  // pass mode, empty diagram background: open the stage's description
+  if (state.mode === 'pass' && showDescribeCard) {
+    showDescribeCard('desc-pass-network', 'panelNetwork');
+  }
 }
 
 function drawSpark() {
@@ -3279,6 +3290,24 @@ function initSidePanel() {
   // cards while in single-pass mode
   let hlTimer = null;
   let panelTimer = null;
+  // jump the side panel to a Describe card and flash the page panel it
+  // documents — shared by the panel-background handlers below and by the
+  // network canvas's pass-mode regions (onArchClick)
+  showDescribeCard = (cardId, secId) => {
+    activate('tabDescribe');
+    const card = document.getElementById(cardId);
+    if (card.id !== 'desc-timeline') endTimelinePreview();
+    document.querySelectorAll('.side-card.hl').forEach((c) => c.classList.remove('hl'));
+    card.classList.add('hl');
+    card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    clearTimeout(hlTimer);
+    hlTimer = setTimeout(() => card.classList.remove('hl'), 2600);
+    document.querySelectorAll('.hl-panel').forEach((p) => p.classList.remove('hl-panel'));
+    const sec = document.getElementById(secId);
+    sec.classList.add('hl-panel');
+    clearTimeout(panelTimer);
+    panelTimer = setTimeout(() => sec.classList.remove('hl-panel'), 2600);
+  };
   const MAP = {
     panelControls: () => (state.mode === 'pass' ? 'desc-pass-controls'
       : state.mode === 'infer' ? 'desc-infer' : 'desc-controls'),
@@ -3296,18 +3325,7 @@ function initSidePanel() {
     sec.addEventListener('click', (e) => {
       if (!CANVAS_OK.has(secId)
         && e.target.closest('button, canvas, select, input, label, a')) return;
-      activate('tabDescribe');
-      const card = document.getElementById(cardIdOf());
-      if (card.id !== 'desc-timeline') endTimelinePreview();
-      document.querySelectorAll('.side-card.hl').forEach((c) => c.classList.remove('hl'));
-      card.classList.add('hl');
-      card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-      clearTimeout(hlTimer);
-      hlTimer = setTimeout(() => card.classList.remove('hl'), 2600);
-      document.querySelectorAll('.hl-panel').forEach((p) => p.classList.remove('hl-panel'));
-      sec.classList.add('hl-panel');
-      clearTimeout(panelTimer);
-      panelTimer = setTimeout(() => sec.classList.remove('hl-panel'), 2600);
+      showDescribeCard(cardIdOf(), secId);
     });
   }
 

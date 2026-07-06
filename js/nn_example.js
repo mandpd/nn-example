@@ -3313,7 +3313,8 @@ function initSidePanel() {
       : state.mode === 'infer' ? 'desc-infer' : 'desc-controls'),
     panelFeature: () => (state.mode === 'infer' ? 'desc-infer' : 'desc-feature'),
     panelNetwork: () => (state.mode === 'pass' ? 'desc-pass-network' : 'desc-network'),
-    panelDetail: () => 'desc-detail',
+    panelDetail: () => (detailTab === 'descent' ? 'desc-detail-2d'
+      : detailTab === 'descent3d' ? 'desc-detail-3d' : 'desc-detail'),
     panelPipeline: () => 'desc-pipeline',
     panelDescent: () => 'desc-descent',
     timeline: () => 'desc-timeline',
@@ -3342,6 +3343,8 @@ function initSidePanel() {
     'desc-pass-network': ['panelNetwork'],
     'desc-network': ['panelNetwork'],
     'desc-detail': ['panelDetail'],
+    'desc-detail-2d': ['panelDetail'],
+    'desc-detail-3d': ['panelDetail'],
     'desc-pipeline': ['panelPipeline'],
     'desc-descent': ['panelDescent'],
   };
@@ -3626,9 +3629,17 @@ function init() {
   window.addEventListener('resize', syncPassRowHeight);
   initTimelineScrub();
   $('#cycleBtn').addEventListener('click', cycleNeurons);
-  $('#detTabLayer').addEventListener('click', () => { detailTab = 'layer'; detailApplyTab(); });
-  $('#detTabDescent').addEventListener('click', () => { detailTab = 'descent'; detailApplyTab(); });
-  $('#detTabDescent3d').addEventListener('click', () => { detailTab = 'descent3d'; detailApplyTab(); });
+  // each detail tab also opens its own Describe card in the side panel
+  const wireDetailTab = (btnSel, tab, cardId) => {
+    $(btnSel).addEventListener('click', () => {
+      detailTab = tab;
+      detailApplyTab();
+      if (showDescribeCard) showDescribeCard(cardId, 'panelDetail');
+    });
+  };
+  wireDetailTab('#detTabLayer', 'layer', 'desc-detail');
+  wireDetailTab('#detTabDescent', 'descent', 'desc-detail-2d');
+  wireDetailTab('#detTabDescent3d', 'descent3d', 'desc-detail-3d');
   initDescent3dDrag();
   initSidePanel();
   initModal();

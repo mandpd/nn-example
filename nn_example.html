@@ -1617,6 +1617,41 @@
           </p>
         </section>
 
+        <section class="side-card" data-mode="epoch pass" id="desc-detail-2d">
+          <h3>Loss map (2d) tab</h3>
+          <p>
+            A contour map of the training loss around the net's current weights, seen from
+            directly above: <b>d₁</b> (x-axis) points along the direction the run has been
+            travelling, <b>d₂</b> (y-axis) is a fixed random perpendicular, and every cell's shade
+            is the real loss with the weights moved to that spot — <b>dark = low</b>, bright
+            violet = high.
+          </p>
+          <p>
+            The <b style="color:#c98500">gold dot</b> is the current weights, sliding downhill
+            between re-surveys; the <b style="color:#9085e9">violet trail</b> is the recent path
+            projected onto the slice; the <b>white ring</b> marks the lowest mapped point nearby.
+            The full story of how this 2-D slice of a ~40-dimensional space is built is on the
+            <b>Loss landscape</b> card below.
+          </p>
+        </section>
+
+        <section class="side-card" data-mode="epoch pass" id="desc-detail-3d">
+          <h3>Loss map (3d) tab</h3>
+          <p>
+            The same survey as the 2-D map, drawn as terrain: <b>d₁</b> on x, <b>d₂</b> on y, and
+            the <b>loss as height</b> — valleys are good weight settings, ridges are bad ones.
+            <b>Drag to rotate</b>: horizontal orbits the view, vertical tilts it toward or away
+            from the horizon.
+          </p>
+          <p>
+            The <b style="color:#9085e9">violet trail</b> is draped over the terrain it actually
+            descended, the <b style="color:#c98500">gold dot</b> sits on the surface at the current
+            weights' own loss, and the <b>white ring</b> marks the lowest surveyed vertex. Train
+            and watch the bowl deepen while the dot rolls to its floor — gradient descent,
+            literally.
+          </p>
+        </section>
+
         <section class="side-card" id="desc-pipeline">
           <h3>The network, layer by layer</h3>
           <p>

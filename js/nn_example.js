@@ -936,7 +936,7 @@ function applyFeaturePanelLabels() {
   $('#pirepAdders').hidden = inf || selectedPt >= 0;
   $('#featInstr').innerHTML = inf
     ? 'click anywhere to move the <b style="color:#c98500">waypoint</b> — the forecast updates live'
-    : 'click a data point to tag it';
+    : 'click a data point to tag or remove it';
 }
 
 function passRowEmph(ri, n, ps) {

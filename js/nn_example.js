@@ -38,7 +38,7 @@ const MAX_HIDDEN_LAYERS = 4;
 const state = {
   hidden: [4, 4],          // neurons per hidden layer
   activation: 'relu',
-  lr: 0.01, momentum: 0.1, batch: 10, l2: 0.001,
+  lr: 0.003, momentum: 0.1, batch: 10, l2: 0.001,
   dataset: 'circle',
   overlay: true,           // shade prediction regions
   playing: false,

@@ -135,6 +135,29 @@ For a **neuron**: its inputs, weights, bias, activation curve and fan-out, compu
 for the traced point. For a **weight**: its value, sign and contribution. When a
 layer has more than two neurons, the ⟳ button cycles which pair forms the axes.
 
+The panel is tabbed: **layer space** is this inspector, and the **loss map (2d)**
+and **loss map (3d)** tabs hold the gradient-descent landscape (below) — handy for
+watching the dot descend while a run plays. Clicking a tab also opens its card in
+the side panel; selecting any layer, neuron or weight flips back to the inspector.
+
+### Loss map (2d) and loss map (3d) tabs
+
+**Loss map (2d)** is a contour map of the training loss around the net's current
+weights, seen from directly above: **d₁** (x-axis) points along the direction the
+run has been travelling, **d₂** (y-axis) is a fixed random perpendicular, and every
+cell's shade is the real loss with the weights moved to that spot — **dark = low**,
+bright violet = high. The **gold dot** is the current weights, sliding downhill
+between re-surveys; the **violet trail** is the recent path projected onto the
+slice; the **white ring** marks the lowest mapped point nearby.
+
+**Loss map (3d)** draws the same survey as terrain: d₁ on x, d₂ on y, and the
+**loss as height** — valleys are good weight settings, ridges are bad ones. **Drag
+to rotate**: horizontal orbits the view, vertical tilts it toward or away from the
+horizon. The violet trail is draped over the terrain it actually descended, the
+gold dot sits on the surface at the current weights' own loss, and the white ring
+marks the lowest surveyed vertex. Train and watch the bowl deepen while the dot
+rolls to its floor — gradient descent, literally.
+
 ### The network, layer by layer
 
 The whole forward pass as a filmstrip: each thumbnail is the same square of space
@@ -142,6 +165,27 @@ after one more stage. Linear layers rotate, scale and shear it; activations fold
 (relu) or squash (tanh, sigmoid) it; softmax lines everything up on the probability
 diagonal. Read left to right to watch the two classes come apart. Click any stage
 to open it in the detail panel.
+
+### Gradient descent · loss landscape
+
+Training is descent on a surface: every possible setting of the weights has a
+loss, and gradient descent walks downhill. The catch is that this net has ~40
+weights, so the true surface lives in ~40 dimensions. The landscape panel (bottom
+of the page) does the honest next-best thing: it takes a **2-D slice** through the
+current weights — one axis (d₁) pointing along the direction the run has actually
+been travelling, the other (d₂) a fixed random perpendicular — and evaluates the
+*real training loss* at every point of that plane. Dark is low loss; bright violet
+is high.
+
+The **gold dot** is the net's current weights, sliding downhill between re-maps;
+the **violet trail** is the recent path of the run projected onto the slice; the
+**white ring** marks the lowest point of the mapped neighborhood. Watch a run
+settle: the trail shortens and the dot comes to rest inside the dark basin on the
+ring — a (local) minimum. Reset the weights and the net drops somewhere new on a
+different part of the surface; raise the learning rate and watch the dot overshoot
+the valley instead of settling into it. The map re-surveys itself as the run moves,
+and the same view is available beside the network diagram via the detail panel's
+**loss map (2d)** and **loss map (3d)** tabs.
 
 ### Single pass — run controls and the stage
 
@@ -162,6 +206,52 @@ sample's real activations arrive; **loss** rings the reported grade's softmax bo
 and prints −log P(truth); **backward** washes neurons violet by their share of the
 blame; **update** redraws the connections that just changed — blue got stronger,
 orange got weaker, thickness shows how much. Everything stays clickable mid-pass.
+
+### Matrix view (the arithmetic)
+
+While a pass runs, the right side of the network panel shows the calculation the
+highlighted layer is executing — with the pass's real numbers, so every row
+multiplies out. A layer is one line of linear algebra: **z = W·a + b**. The weight
+matrix **W** has one *row per neuron* and one *column per input* (its dimensions
+are printed underneath); **a** is the previous layer's output as a column vector;
+**b** is the bias vector — one nudge per neuron. Row × column + bias gives each
+neuron's weighted sum in **z**.
+
+The next step applies the **activation element-wise**: z → a through
+relu/tanh/sigmoid (relu simply zeroes the negatives), or softmax turning the final
+scores into the two probabilities in **P**. When a layer is too wide to print, the
+view keeps the top-left corner of the matrix and marks the rest with ⋯ and ⋮ — the
+true size stays in the dims label. The same panel then re-uses this notation
+backwards: δa = Wᵀ·δz during backprop, and W + ΔW = W′ at the update.
+
+### The loss function
+
+The loss turns "how wrong was that?" into a single number: **L = −log P[y]** —
+cross-entropy — where P[y] is the probability the net gave the ride the PIREP
+actually reported. At the **loss** step the matrix view plots that curve with the
+net's own (P[y], L) marked in gold, and a badge names the loss under the output
+row — the loss lives just below the net, comparing its output with the truth.
+
+The shape of −log is the whole point: right and confident (P[y] → 1) costs nearly
+nothing; unsure costs a little; **confidently wrong** (P[y] → 0) runs up the cliff
+toward infinity. That asymmetry is what makes training spend its effort on the
+reports it is getting wrong — a coin-flip answer sits near L = −log 0.5 ≈ 0.69,
+the value a fresh net hovers at.
+
+### Backprop · the diff flows back
+
+Backprop starts with a beautiful coincidence: for softmax + cross-entropy, the
+slope of the loss at the output is simply **δz = P − y** — the forecast minus the
+truth. No mystery quantity: *the diff itself is the error signal*. The violet
+arrows under the output row show it being injected, and the matrix view computes
+it from the real vectors.
+
+From there the diff walks back one layer at a time: **δa = Wᵀ·δz** — the very same
+weights that carried values forward, now transposed, split the blame among the
+neurons that supplied them. Each neuron's violet wash is its actual share;
+activations gate the flow (a relu that output 0 passes no blame — dead neurons
+don't learn). When the diff reaches the bottom, every weight knows its own slope,
+and **update** steps each one against it: W ← W − η·∂L/∂W.
 
 ### Inference
 

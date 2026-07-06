@@ -697,6 +697,8 @@ function startPass(paused, atEnd) {
     }
   });
   steps.push({ phase: 'loss' });
+  // the seed step: the loss turns into the output error signal δz = P − y
+  steps.push({ phase: 'backward', row: rows.length - 1, seed: true });
   for (let ri = rows.length - 2; ri >= 0; ri--) steps.push({ phase: 'backward', row: ri });
   steps.push({ phase: 'update' });
   steps.push({ phase: 'done' });
@@ -815,6 +817,7 @@ function passCaption(st) {
       return `Loss · the net says P(${short}) = ${fmt(P)}; the PIREP said “${short}”. Loss = −log(${fmt(P)}) = ${pass.loss.toFixed(3)} — the more right the net is, the smaller this gets.`;
     }
     case 'backward':
+      if (st.seed) return 'Backward · first the loss becomes an error signal. With softmax + cross-entropy its slope at the output is simply P − y — forecast minus truth. That diff is injected at the output (violet) and now flows back up.';
       return `Backward · the loss gradient flows back through ${rows[st.row].label} along the same weights — brighter violet = more responsibility for the error.`;
     case 'update':
       return `Update · every weight steps against its gradient (learning rate ${state.lr}): blue connections just got stronger, orange got weaker — thickness shows how much.`;
@@ -1704,7 +1707,10 @@ function drawArch() {
   archMatX = showMat ? netW : Infinity;
 
   const padTop = probe >= 0 ? 44 : 34;
-  const padBot = 42;
+  // a training pass reserves room under the output row for the loss badge
+  // and the δz = P − y injection arrows of the seed step
+  const isTrainPass = !!ps && !pass.inference;
+  const padBot = isTrainPass ? 80 : 42;
   const actGap = 30, actBox = 17;
   const maxCount = Math.max(...rows.map((r) => r.count));
   const spacing = Math.min(52, (netW - 150) / Math.max(maxCount - 1, 1));
@@ -1935,6 +1941,41 @@ function drawArch() {
     ctx.fillText(row.label, 10, yN + 4);
   }
   ctx.globalAlpha = 1;
+
+  // the loss lives below the output row: name it there, and on the seed step
+  // show its slope P − y being injected back into the output nodes
+  if (isTrainPass && (ps.phase === 'loss' || ps.seed)) {
+    const out = rows[rows.length - 1];
+    const yBadge = H - 16;
+    ctx.textAlign = 'center';
+    ctx.font = '600 11px ui-monospace, Menlo, monospace';
+    if (ps.seed) {
+      ctx.fillStyle = C.spark;
+      ctx.fillText('δz = P − y · the diff heads back up', netW / 2, yBadge);
+      const yTip = (actY[rows.length - 1] ?? nodeY[rows.length - 1]) + 26;
+      ctx.strokeStyle = C.spark;
+      ctx.lineWidth = 1.4;
+      for (let j = 0; j < out.count; j++) {
+        const x = nodeX(out, j);
+        ctx.beginPath();
+        ctx.moveTo(x, yBadge - 12);
+        ctx.lineTo(x, yTip + 4);
+        ctx.stroke();
+        ctx.fillStyle = C.spark;
+        ctx.beginPath();
+        ctx.moveTo(x, yTip - 1);
+        ctx.lineTo(x - 3.5, yTip + 5);
+        ctx.lineTo(x + 3.5, yTip + 5);
+        ctx.closePath();
+        ctx.fill();
+      }
+    } else {
+      const P = pass.acts[net.layers.length - 1][labels[pass.p]];
+      ctx.fillStyle = C.tag;
+      ctx.fillText(`loss L = −log(${fmt(P)}) = ${pass.loss.toFixed(3)}`, netW / 2, yBadge);
+    }
+    ctx.textAlign = 'left';
+  }
 
   if (showMat) drawPassMatrixPanel(ctx, netW, W, H, rows);
   if (probe >= 0) drawProbeCaption(ctx, W, probe);
@@ -2178,9 +2219,25 @@ function passMatrixSpec(st, rows) {
         sub: 'L = −log P[y] — compare P with the truth y',
         items: [vec(Array.from(P), 'P', { hiRow: y }), vec(onehot, 'y', { hiRow: y })],
         footer: `L = −log(${fmt(P[y])}) = ${pass.loss.toFixed(3)}`,
+        graph: { p: P[y], loss: pass.loss },
       };
     }
     case 'backward': {
+      if (st.seed) {
+        const P = A[net.layers.length - 1];
+        const y = labels[pass.p];
+        const onehot = Array.from(P, (_, i) => (i === y ? 1 : 0));
+        const out = rows[rows.length - 1];
+        return {
+          title: 'backward · loss gradient',
+          sub: 'δz = P − y — the diff IS the error signal',
+          items: [
+            vec(Array.from(P), 'P'), op('−'), vec(onehot, 'y', { hiRow: y }),
+            op('='), vec(pass.grads[out.fcIdx], 'δz', RES),
+          ],
+          footer: 'softmax + cross-entropy make ∂L/∂z exactly this diff; it now flows back through every layer',
+        };
+      }
       const from = rows[st.row], to = rows[st.row + 1];
       const F = preF(to.fcIdx);
       const dz = pass.grads[to.fcIdx];
@@ -2258,7 +2315,54 @@ function drawPassMatrixPanel(ctx, x0, x1, H, rows) {
     footH = shown.length * 14 + 8;
   }
 
-  drawMatExpr(ctx, px0, px1, 46 + (H - 46 - footH - 20) / 2, spec.items);
+  // the loss step also plots L = −log p, with the net's actual P[y] marked
+  const graphH = spec.graph ? Math.min(150, Math.max(110, Math.round(H * 0.3))) : 0;
+  drawMatExpr(ctx, px0, px1, 46 + (H - 46 - footH - graphH - 20) / 2, spec.items);
+  if (spec.graph) drawLossCurve(ctx, px0, px1, H - footH - graphH - 10, graphH, spec.graph);
+}
+
+function drawLossCurve(ctx, x0, x1, yTop, hBox, g) {
+  const gx = x0 + 26, gw = x1 - x0 - 40, gy = yTop + 10, gh = hBox - 40;
+  const LMAX = 3;
+  const mx = (p) => gx + p * gw;
+  const my = (L) => gy + gh - Math.min(L, LMAX) / LMAX * gh;
+  ctx.strokeStyle = C.axis;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(gx, gy); ctx.lineTo(gx, gy + gh); ctx.lineTo(gx + gw, gy + gh);
+  ctx.stroke();
+  ctx.strokeStyle = C.inkSec;
+  ctx.lineWidth = 1.3;
+  ctx.beginPath();
+  const pMin = Math.exp(-LMAX); // where −log p leaves the plotted range
+  for (let k = 0; k <= 60; k++) {
+    const p = pMin + k / 60 * (1 - pMin);
+    const px = mx(p), py = my(-Math.log(p));
+    if (k === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.stroke();
+  // dashed guides to the axes, then the net's current (P[y], L)
+  const dx = mx(Math.max(g.p, pMin)), dy = my(g.loss);
+  ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+  ctx.setLineDash([3, 3]);
+  ctx.beginPath();
+  ctx.moveTo(gx, dy); ctx.lineTo(dx, dy); ctx.lineTo(dx, gy + gh);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = C.tag;
+  ctx.beginPath();
+  ctx.arc(dx, dy, 3.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.font = MAT_FONT;
+  ctx.fillStyle = C.muted;
+  ctx.fillText('L = −log p', gx + 6, gy + 4);
+  ctx.textAlign = 'center';
+  ctx.fillText('0', gx, gy + gh + 12);
+  ctx.fillText('1', gx + gw, gy + gh + 12);
+  ctx.fillText('P[y] → confident & correct', gx + gw / 2, gy + gh + 12);
+  ctx.textAlign = 'left';
+  ctx.fillStyle = C.tag;
+  ctx.fillText(`(${fmt(g.p)}, ${g.loss.toFixed(2)})`, Math.min(dx + 8, x1 - 60), dy - 6);
 }
 
 function segDist(px, py, x1, y1, x2, y2) {

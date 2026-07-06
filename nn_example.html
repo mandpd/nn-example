@@ -425,6 +425,8 @@
     }
 
     canvas.stage[hidden] { display: none; }
+    canvas.stage-grab { cursor: grab; touch-action: none; }
+    canvas.stage-grab:active { cursor: grabbing; }
 
     /* ---------- detail panel tabs (layer space | loss landscape) ---------- */
     .detail-tabs { display: flex; gap: 6px; flex: none; }
@@ -1211,7 +1213,9 @@
             <button id="detTabLayer" class="side-tab" type="button" role="tab"
               aria-selected="true">layer space</button>
             <button id="detTabDescent" class="side-tab" type="button" role="tab"
-              aria-selected="false">loss landscape</button>
+              aria-selected="false">loss map</button>
+            <button id="detTabDescent3d" class="side-tab" type="button" role="tab"
+              aria-selected="false">3-d</button>
           </div>
         </header>
         <p class="tab-note" id="detailTabNote">(select the layer to view from the selection in the panel below)</p>
@@ -1222,6 +1226,13 @@
           <b style="color:#c98500">gold dot</b> = current weights ·
           <b style="color:#9085e9">violet trail</b> = recent path ·
           white ring = lowest mapped point · dark = low loss
+        </p>
+        <canvas id="detailDescent3dCanvas" class="stage stage-grab" hidden>Your browser does not support canvas.</canvas>
+        <p class="hint" id="detailDescent3dHint" hidden>
+          <b>drag to rotate</b> · height = loss over d₁ (x) and d₂ (y) ·
+          <b style="color:#c98500">gold dot</b> = current weights ·
+          <b style="color:#9085e9">violet trail</b> = recent path ·
+          white ring = lowest mapped point
         </p>
       </section>
     </main>

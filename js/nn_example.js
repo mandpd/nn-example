@@ -580,7 +580,8 @@ function setMode(m) {
   // frozen weights descend nowhere: inference hides the landscape everywhere
   $('#panelDescent').hidden = m === 'infer';
   $('#detTabDescent').hidden = m === 'infer';
-  if (m === 'infer' && detailTab === 'descent') detailTab = 'layer';
+  $('#detTabDescent3d').hidden = m === 'infer';
+  if (m === 'infer' && detailTab !== 'layer') detailTab = 'layer';
   detailApplyTab();
   $('#describePane').dataset.mode = m; // Describe cards follow the visible panels
   // the side panel follows the mode: inference opens the decision guide
@@ -2597,22 +2598,37 @@ function descentTick() {
   descentCompute();
 }
 
-/* the detail panel hosts the landscape as its second tab */
-let detailTab = 'layer'; // 'layer' | 'descent'
+/* the detail panel hosts the landscape as its second (map) and third (3-d) tabs */
+let detailTab = 'layer'; // 'layer' | 'descent' | 'descent3d'
+
+const DETAIL_TABS = {
+  layer: {
+    btn: '#detTabLayer', cv: '#layerCanvas', hint: '#layerExpl',
+    note: '(select the layer to view from the selection in the panel below)',
+  },
+  descent: {
+    btn: '#detTabDescent', cv: '#detailDescentCanvas', hint: '#detailDescentHint',
+    note: '(see below for a description of this landscape)',
+    title: 'Gradient descent · loss landscape',
+  },
+  descent3d: {
+    btn: '#detTabDescent3d', cv: '#detailDescent3dCanvas', hint: '#detailDescent3dHint',
+    note: '(drag to rotate · see below for a description of this landscape)',
+    title: 'Gradient descent · loss surface',
+  },
+};
 
 function detailApplyTab() {
-  const d = detailTab === 'descent';
-  $('#detTabLayer').setAttribute('aria-selected', String(!d));
-  $('#detTabDescent').setAttribute('aria-selected', String(d));
-  $('#layerCanvas').hidden = d;
-  $('#layerExpl').hidden = d;
-  $('#detailDescentCanvas').hidden = !d;
-  $('#detailDescentHint').hidden = !d;
-  $('#detailTabNote').textContent = d
-    ? '(see below for a description of this landscape)'
-    : '(select the layer to view from the selection in the panel below)';
-  if (d) {
-    $('#layerTitle').textContent = 'Gradient descent · loss landscape';
+  for (const [k, t] of Object.entries(DETAIL_TABS)) {
+    const on = detailTab === k;
+    $(t.btn).setAttribute('aria-selected', String(on));
+    $(t.cv).hidden = !on;
+    $(t.hint).hidden = !on;
+  }
+  const t = DETAIL_TABS[detailTab];
+  $('#detailTabNote').textContent = t.note;
+  if (t.title) {
+    $('#layerTitle').textContent = t.title;
     $('#cycleBtn').hidden = true;
   } else {
     updateSelectionUI(); // restores the selection's title, hint and ⟳ button
@@ -2630,6 +2646,7 @@ function detailShowLayerTab() {
 function drawDescent() {
   if (!$('#panelDescent').hidden) drawDescentInto($('#descentCanvas'));
   if (!$('#detailDescentCanvas').hidden) drawDescentInto($('#detailDescentCanvas'));
+  if (!$('#detailDescent3dCanvas').hidden) drawDescent3DInto($('#detailDescent3dCanvas'));
 }
 
 function drawDescentInto(cv) {
@@ -2709,6 +2726,160 @@ function drawDescentInto(cv) {
   ctx.rotate(-Math.PI / 2);
   ctx.fillText('d₂ · random ⊥ →', 0, 0);
   ctx.restore();
+}
+
+/* ---- 3-d surface view of the same survey: loss vertical over (d1, d2) ---- */
+let d3yaw = -0.65;   // azimuth, radians — drag horizontally
+let d3elev = 1.05;   // elevation above the horizon — drag vertically
+
+/* bilinear height of the surveyed surface at slice coords (a, b) ∈ [−1, 1] */
+function descentHeightAt(a, b) {
+  const { grid, N } = descent;
+  const gx = (Math.max(-1, Math.min(1, a)) + 1) / 2 * (N - 1);
+  const gy = (Math.max(-1, Math.min(1, b)) + 1) / 2 * (N - 1);
+  const x0 = Math.floor(gx), y0 = Math.floor(gy);
+  const x1 = Math.min(x0 + 1, N - 1), y1 = Math.min(y0 + 1, N - 1);
+  const fx = gx - x0, fy = gy - y0;
+  return grid[y0 * N + x0] * (1 - fx) * (1 - fy) + grid[y0 * N + x1] * fx * (1 - fy)
+    + grid[y1 * N + x0] * (1 - fx) * fy + grid[y1 * N + x1] * fx * fy;
+}
+
+function drawDescent3DInto(cv) {
+  const { ctx, w: S } = fitCanvas(cv);
+  ctx.fillStyle = C.surface;
+  ctx.fillRect(0, 0, S, S);
+  if (descent && descent.dims !== flatWeightCount()) descent = null;
+  if (!descent) { centerText(ctx, S, 'mapping the loss landscape…'); return; }
+  const { grid, N, w0, d1, d2, r, min, max } = descent;
+  const dv = Math.max(max - min, 1e-9);
+  const ZH = 0.85; // world height of the loss axis
+  const cosY = Math.cos(d3yaw), sinY = Math.sin(d3yaw);
+  const cosE = Math.cos(d3elev), sinE = Math.sin(d3elev);
+  const scale = (S - 90) / (2 * Math.SQRT2);
+  const cx = S / 2, cy = S / 2 + ZH * cosE * scale * 0.5;
+  // orthographic: yaw about the loss axis, then tilt by elevation
+  const proj = (X, Y, Z) => {
+    const rx = X * cosY - Y * sinY;
+    const ry = X * sinY + Y * cosY;
+    return [cx + rx * scale, cy + (ry * sinE - Z * cosE) * scale, ry * cosE + Z * sinE];
+  };
+  const hOf = (i) => (grid[i] - min) / dv * ZH;
+
+  // project every vertex once
+  const VX = new Float64Array(N * N), VY = new Float64Array(N * N), VD = new Float64Array(N * N);
+  for (let gy = 0; gy < N; gy++) {
+    for (let gx = 0; gx < N; gx++) {
+      const i = gy * N + gx;
+      const [px2, py2, dep] = proj((gx / (N - 1)) * 2 - 1, (gy / (N - 1)) * 2 - 1, hOf(i));
+      VX[i] = px2; VY[i] = py2; VD[i] = dep;
+    }
+  }
+
+  // painter's algorithm: sort cells far → near by mean corner depth
+  const cells = [];
+  for (let gy = 0; gy < N - 1; gy++) {
+    for (let gx = 0; gx < N - 1; gx++) {
+      const i0 = gy * N + gx, i1 = i0 + 1, i2 = i0 + N, i3 = i2 + 1;
+      cells.push([VD[i0] + VD[i1] + VD[i2] + VD[i3], i0, i1, i3, i2]);
+    }
+  }
+  cells.sort((p, q) => p[0] - q[0]);
+
+  const ramp = (t) => {
+    const m = (lo, hi) => Math.round(lo + (hi - lo) * t);
+    return `rgb(${m(30, 144)}, ${m(30, 133)}, ${m(29, 233)})`;
+  };
+  ctx.lineJoin = 'round';
+  for (const [, i0, i1, i3, i2] of cells) {
+    const t = ((grid[i0] + grid[i1] + grid[i2] + grid[i3]) / 4 - min) / dv;
+    ctx.fillStyle = ramp(0.06 + 0.9 * t);
+    ctx.strokeStyle = 'rgba(255,255,255,0.10)';
+    ctx.lineWidth = 0.6;
+    ctx.beginPath();
+    ctx.moveTo(VX[i0], VY[i0]);
+    ctx.lineTo(VX[i1], VY[i1]);
+    ctx.lineTo(VX[i3], VY[i3]);
+    ctx.lineTo(VX[i2], VY[i2]);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+  }
+
+  // white ring on the lowest surveyed vertex
+  let minAt = 0;
+  for (let i = 1; i < grid.length; i++) if (grid[i] < grid[minAt]) minAt = i;
+  ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  ctx.arc(VX[minAt], VY[minAt], 6, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // trajectory + live weights, draped on the surface (bilinear heights)
+  const slice = (flat) => {
+    let a = 0, b = 0;
+    for (let i = 0; i < flat.length; i++) {
+      const d = flat[i] - w0[i];
+      a += d * d1[i];
+      b += d * d2[i];
+    }
+    return [Math.max(-1, Math.min(1, a / r)), Math.max(-1, Math.min(1, b / r))];
+  };
+  const drape = (a, b) => proj(a, b, (descentHeightAt(a, b) - min) / dv * ZH + 0.015);
+  ctx.strokeStyle = C.spark;
+  ctx.lineWidth = 1.6;
+  ctx.globalAlpha = 0.9;
+  ctx.beginPath();
+  let started = false;
+  for (let h = Math.max(0, history.length - 60); h < history.length; h++) {
+    const snap = flatFromSnap(history[h].weights);
+    if (snap.length !== w0.length) continue;
+    const [px2, py2] = drape(...slice(snap));
+    if (!started) { ctx.moveTo(px2, py2); started = true; }
+    else ctx.lineTo(px2, py2);
+  }
+  const [na, nb] = slice(flatWeights());
+  const [nx, ny] = drape(na, nb);
+  if (started) ctx.lineTo(nx, ny);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = C.tag;
+  ctx.beginPath();
+  ctx.arc(nx, ny, 5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = '#141413';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // axis labels pinned to the base square's projected edges
+  ctx.font = MONO;
+  ctx.fillStyle = C.muted;
+  ctx.textAlign = 'center';
+  const [ax, ay] = proj(1.28, 0, 0);
+  ctx.fillText('d₁ →', ax, ay);
+  const [bx, by] = proj(0, 1.28, 0);
+  ctx.fillText('d₂ →', bx, by);
+  ctx.textAlign = 'left';
+  ctx.fillText('loss ↑ · drag to rotate', 12, 18);
+}
+
+/* drag on the 3-d canvas orbits the camera */
+function initDescent3dDrag() {
+  const cv = $('#detailDescent3dCanvas');
+  let last = null;
+  cv.addEventListener('pointerdown', (e) => {
+    last = [e.clientX, e.clientY];
+    cv.setPointerCapture(e.pointerId);
+  });
+  cv.addEventListener('pointermove', (e) => {
+    if (!last) return;
+    d3yaw += (e.clientX - last[0]) * 0.01;
+    d3elev = Math.max(0.2, Math.min(1.45, d3elev + (e.clientY - last[1]) * 0.008));
+    last = [e.clientX, e.clientY];
+    requestRender();
+  });
+  const end = () => { last = null; };
+  cv.addEventListener('pointerup', end);
+  cv.addEventListener('pointercancel', end);
 }
 
 function requestRender() { needsRender = true; }
@@ -2804,9 +2975,9 @@ function selectEdge(rowIdx, i, j) {
 }
 
 function updateSelectionUI() {
-  // the landscape tab owns the header while it is up; the selection keeps
+  // the landscape tabs own the header while up; the selection keeps
   // driving the filmstrip highlight underneath
-  if (detailTab === 'descent') {
+  if (detailTab !== 'layer') {
     $('#cycleBtn').hidden = true;
     minis.forEach((m, i) => m.el.classList.toggle('sel', i === state.lix));
     return;
@@ -3439,6 +3610,8 @@ function init() {
   $('#cycleBtn').addEventListener('click', cycleNeurons);
   $('#detTabLayer').addEventListener('click', () => { detailTab = 'layer'; detailApplyTab(); });
   $('#detTabDescent').addEventListener('click', () => { detailTab = 'descent'; detailApplyTab(); });
+  $('#detTabDescent3d').addEventListener('click', () => { detailTab = 'descent3d'; detailApplyTab(); });
+  initDescent3dDrag();
   initSidePanel();
   initModal();
   initFullscreen();

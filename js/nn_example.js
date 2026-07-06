@@ -128,6 +128,7 @@ function setData(name, animate) {
     b.setAttribute('aria-pressed', String(b.dataset.set === name));
   });
   if (animate) animateDataArrival(); else clearDataReveal();
+  markDescentDirty();
   requestRender();
 }
 
@@ -152,6 +153,7 @@ function buildNet() {
   state.d1 = Math.min(1, net.layers[state.lix].out_depth - 1);
   buildPipeline();
   updateSelectionUI();
+  markDescentDirty();
   requestRender();
 }
 
@@ -516,6 +518,7 @@ function recordLoss(avloss, n) {
   state.epoch += n;
   // the timeline's loss trail spans the whole run, so it can't shift out old
   // values the way lossHist does — decimate instead, keeping full-run coverage
+  markDescentDirty(); // weights moved: the landscape needs a re-survey
   state.lossCurve.push({ e: state.epoch, v: avloss });
   if (state.lossCurve.length > 600) {
     const last = state.lossCurve[state.lossCurve.length - 1];
@@ -550,6 +553,7 @@ function stepBack() {
   state.lossHist = s.hist;
   state.lossCurve = s.curve;
   setUndoDisabled(!history.length);
+  markDescentDirty();
   requestRender();
 }
 
@@ -573,6 +577,7 @@ function setMode(m) {
   $('#panelControls').classList.toggle('pass-mode', m === 'pass');
   $('#panelControls').classList.toggle('infer-mode', m === 'infer');
   document.querySelector('.viz').classList.toggle('passing', m === 'pass');
+  $('#panelDescent').hidden = m === 'infer'; // frozen weights: nothing descends
   $('#describePane').dataset.mode = m; // Describe cards follow the visible panels
   // the side panel follows the mode: inference opens the decision guide
   $(m === 'infer' ? '#tabDecide' : '#tabIntro').click();
@@ -665,6 +670,7 @@ function startPass(paused, atEnd) {
   v.w[1] = data[p][1];
   const stats = tmp.train(v, labels[p]);
   const post = weightsSnapshot();
+  markDescentDirty(); // the animated sample already moved the weights
 
   // capture what actually happened: activations, error signals, weight deltas
   const acts = net.layers.map((L) => Float64Array.from(L.out_act.w));
@@ -1196,6 +1202,7 @@ function render() {
   drawArch();
   drawMinis(field);
   drawSpark();
+  drawDescent();
   if (timelineShown()) drawTimeline();
   $('#lossVal').textContent = state.loss == null ? '—' : state.loss.toFixed(4);
   $('#epochVal').textContent = state.epoch.toLocaleString();
@@ -2418,6 +2425,252 @@ function drawSpark() {
   ctx.stroke();
 }
 
+/* ---------------- gradient descent landscape ----------------
+   The loss surface lives in one dimension per weight, so it can't be drawn —
+   but a 2-D slice through the current weights can be evaluated for real:
+   d1 points along the run's own recent travel (so the picture is oriented
+   along the descent), d2 is a fixed random perpendicular, and every grid
+   cell is the true training loss at w0 + (a·d1 + b·d2)·r. The survey runs
+   in small time-boxed chunks so training and rendering never stall, and the
+   live weights are restored before every yield. */
+const DESCENT_N = 29;              // grid cells per axis (odd: center sampled)
+const DESCENT_COOLDOWN_MS = 700;   // min gap between two surveys
+let descent = null;                // finished survey {w0,d1,d2,r,grid,N,dims,min,max,minA,minB}
+let descentDirty = true;
+let descentBusy = false;
+let descentLast = 0;
+let descentRandA = null, descentRandB = null; // sticky directions → stable view
+
+function markDescentDirty() { descentDirty = true; }
+
+function flatWeightCount() {
+  let n = 0;
+  for (const L of net.layers) {
+    if (L.filters) n += L.filters.length * L.filters[0].w.length + L.biases.w.length;
+  }
+  return n;
+}
+
+function flatWeights() {
+  const out = new Float64Array(flatWeightCount());
+  let k = 0;
+  for (const L of net.layers) {
+    if (!L.filters) continue;
+    for (const f of L.filters) for (const w of f.w) out[k++] = w;
+    for (const b of L.biases.w) out[k++] = b;
+  }
+  return out;
+}
+
+function setFlatWeights(arr) {
+  let k = 0;
+  for (const L of net.layers) {
+    if (!L.filters) continue;
+    for (const f of L.filters) for (let i = 0; i < f.w.length; i++) f.w[i] = arr[k++];
+    for (let i = 0; i < L.biases.w.length; i++) L.biases.w[i] = arr[k++];
+  }
+}
+
+/* flatten a history snapshot in the same order as flatWeights() */
+function flatFromSnap(snap) {
+  const out = [];
+  for (const s of snap) {
+    for (const fw of s.filters) out.push(...fw);
+    out.push(...s.biases);
+  }
+  return out;
+}
+
+function descentDirections() {
+  const w0 = flatWeights();
+  const n = w0.length;
+  const freshRand = () => Float64Array.from({ length: n }, () => convnetjs.randn(0, 1));
+  if (!descentRandA || descentRandA.length !== n) descentRandA = freshRand();
+  if (!descentRandB || descentRandB.length !== n) descentRandB = freshRand();
+
+  // d1: where the run has been travelling (oldest snapshot → now); random until
+  // there is a run
+  let d1 = null, travel = 0;
+  if (history.length) {
+    const old = flatFromSnap(history[0].weights);
+    if (old.length === n) {
+      d1 = new Float64Array(n);
+      let s = 0;
+      for (let i = 0; i < n; i++) { d1[i] = w0[i] - old[i]; s += d1[i] * d1[i]; }
+      travel = Math.sqrt(s);
+      if (travel < 1e-6) d1 = null;
+    }
+  }
+  if (!d1) d1 = Float64Array.from(descentRandA);
+  const norm = (v) => {
+    let s = 0;
+    for (const x of v) s += x * x;
+    s = Math.sqrt(s) || 1;
+    for (let i = 0; i < v.length; i++) v[i] /= s;
+  };
+  norm(d1);
+  // d2: the sticky random direction, made perpendicular to d1
+  const d2 = Float64Array.from(descentRandB);
+  let dot = 0;
+  for (let i = 0; i < n; i++) dot += d2[i] * d1[i];
+  for (let i = 0; i < n; i++) d2[i] -= dot * d1[i];
+  norm(d2);
+  // slice half-width: wide enough to hold the recent path, never microscopic
+  const r = Math.min(Math.max(travel * 1.25, 0.8), 8);
+  return { w0, d1, d2, r };
+}
+
+function descentLossHere(v, step) {
+  let sum = 0, cnt = 0;
+  for (let k = 0; k < data.length; k += step) {
+    v.w[0] = data[k][0];
+    v.w[1] = data[k][1];
+    const P = net.forward(v, false).w[labels[k]];
+    sum += -Math.log(Math.max(P, 1e-12));
+    cnt++;
+  }
+  return sum / cnt;
+}
+
+function descentCompute() {
+  descentBusy = true;
+  descentDirty = false;
+  const { w0, d1, d2, r } = descentDirections();
+  const N = DESCENT_N;
+  const surf = { w0, d1, d2, r, N, dims: w0.length, grid: new Float64Array(N * N) };
+  const step = data.length > 120 ? 2 : 1;
+  const tmp = new Float64Array(w0.length);
+  const v = new convnetjs.Vol(1, 1, 2);
+  let row = 0;
+  const chunk = () => {
+    // the net was rebuilt or the data emptied mid-survey: abandon, try again
+    if (!data.length || flatWeightCount() !== surf.dims) {
+      descentBusy = false;
+      descentDirty = true;
+      return;
+    }
+    const live = flatWeights();
+    const t0 = performance.now();
+    while (row < N && performance.now() - t0 < 12) {
+      const b = (row / (N - 1)) * 2 - 1;
+      for (let cx = 0; cx < N; cx++) {
+        const a = (cx / (N - 1)) * 2 - 1;
+        for (let i = 0; i < surf.dims; i++) tmp[i] = w0[i] + (a * d1[i] + b * d2[i]) * r;
+        setFlatWeights(tmp);
+        surf.grid[row * N + cx] = descentLossHere(v, step);
+      }
+      row++;
+    }
+    setFlatWeights(live);
+    if (row < N) { setTimeout(chunk, 0); return; }
+    surf.min = Infinity;
+    surf.max = -Infinity;
+    let minAt = 0;
+    surf.grid.forEach((L, i) => {
+      if (L < surf.min) { surf.min = L; minAt = i; }
+      if (L > surf.max) surf.max = L;
+    });
+    surf.minA = ((minAt % N) / (N - 1)) * 2 - 1;
+    surf.minB = (Math.floor(minAt / N) / (N - 1)) * 2 - 1;
+    descent = surf;
+    descentBusy = false;
+    descentLast = performance.now();
+    $('#descentNote').textContent =
+      `${surf.dims} weights · slice half-width ${r.toFixed(2)} · loss ${surf.min.toFixed(2)}–${surf.max.toFixed(2)} · dark = low`;
+    requestRender();
+  };
+  setTimeout(chunk, 0);
+}
+
+/* start a survey when one is due; called every tick */
+function descentTick() {
+  if ($('#panelDescent').hidden || !data.length) return;
+  if (descentBusy || !descentDirty) return;
+  if (performance.now() - descentLast < DESCENT_COOLDOWN_MS) return;
+  descentCompute();
+}
+
+function drawDescent() {
+  const panel = $('#panelDescent');
+  if (panel.hidden) return;
+  const { ctx, w: S } = fitCanvas($('#descentCanvas'));
+  ctx.fillStyle = C.surface;
+  ctx.fillRect(0, 0, S, S);
+  if (descent && descent.dims !== flatWeightCount()) descent = null;
+  if (!descent) { centerText(ctx, S, 'mapping the loss landscape…'); return; }
+  const { grid, N, w0, d1, d2, r, min, max } = descent;
+  const pad = 22;
+  const span = S - pad * 2;
+  const cs = span / N;
+  const px = (a) => pad + (a + 1) / 2 * span; // a,b ∈ [−1,1] → canvas
+  const dv = Math.max(max - min, 1e-9);
+
+  // posterized heatmap: bright violet ridge, near-black valley — the contour
+  // bands read as a topo map without marching squares
+  for (let gy = 0; gy < N; gy++) {
+    for (let gx = 0; gx < N; gx++) {
+      const t = (grid[gy * N + gx] - min) / dv;
+      const tq = Math.round(t * 11) / 11;
+      ctx.fillStyle = `rgba(144, 133, 233, ${(0.04 + 0.72 * tq).toFixed(3)})`;
+      ctx.fillRect(pad + gx * cs, pad + gy * cs, cs + 0.5, cs + 0.5);
+    }
+  }
+
+  // the lowest surveyed point: a white ring to settle into
+  ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  ctx.arc(px(descent.minA), px(descent.minB), 7, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // recent trajectory + the live weights, projected onto the slice
+  const proj = (flat) => {
+    let a = 0, b = 0;
+    for (let i = 0; i < flat.length; i++) {
+      const d = flat[i] - w0[i];
+      a += d * d1[i];
+      b += d * d2[i];
+    }
+    return [a / r, b / r];
+  };
+  const clip = (t) => Math.max(-1.04, Math.min(1.04, t));
+  ctx.strokeStyle = C.spark;
+  ctx.lineWidth = 1.5;
+  ctx.globalAlpha = 0.85;
+  ctx.beginPath();
+  let started = false;
+  const from = Math.max(0, history.length - 60);
+  for (let h = from; h < history.length; h++) {
+    const snap = flatFromSnap(history[h].weights);
+    if (snap.length !== w0.length) continue;
+    const [a, b] = proj(snap);
+    const x = px(clip(a)), y = px(clip(b));
+    if (!started) { ctx.moveTo(x, y); started = true; }
+    else ctx.lineTo(x, y);
+  }
+  const [na, nb] = proj(flatWeights());
+  const nx = px(clip(na)), ny = px(clip(nb));
+  if (started) ctx.lineTo(nx, ny);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = C.tag;
+  ctx.beginPath();
+  ctx.arc(nx, ny, 5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = '#141413';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  ctx.font = MONO;
+  ctx.fillStyle = C.muted;
+  ctx.fillText('d₁ · along the run’s travel →', pad, S - 7);
+  ctx.save();
+  ctx.translate(13, S - pad);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillText('d₂ · random ⊥ →', 0, 0);
+  ctx.restore();
+}
+
 function requestRender() { needsRender = true; }
 
 /* ---------------- pipeline strip ---------------- */
@@ -2696,6 +2949,7 @@ function addPirep(cls, x, y) {
   data.push([x, y]);
   labels.push(lab);
   tagged.push(false);
+  markDescentDirty(); // the surface is loss-over-THIS-data
   if (reveal) reveal.shown.add(data.length - 1); // a hand-filed report lands at once
   const grade = (lab === DOG ? 1 : 4) + Math.floor(Math.random() * 3);
   const entry = { x, y, lab, text: `${randTail()} · ${grade}` };
@@ -2811,13 +3065,15 @@ function initSidePanel() {
     panelNetwork: () => (state.mode === 'pass' ? 'desc-pass-network' : 'desc-network'),
     panelDetail: () => 'desc-detail',
     panelPipeline: () => 'desc-pipeline',
+    panelDescent: () => 'desc-descent',
     timeline: () => 'desc-timeline',
   };
+  // these panels' canvases are pure display, so they don't block the lookup
+  const CANVAS_OK = new Set(['timeline', 'panelDescent']);
   for (const [secId, cardIdOf] of Object.entries(MAP)) {
     const sec = document.getElementById(secId);
     sec.addEventListener('click', (e) => {
-      // the timeline's canvas is pure display, so it doesn't block the lookup
-      if (secId !== 'timeline'
+      if (!CANVAS_OK.has(secId)
         && e.target.closest('button, canvas, select, input, label, a')) return;
       activate('tabDescribe');
       const card = document.getElementById(cardIdOf());
@@ -2848,6 +3104,7 @@ function initSidePanel() {
     'desc-network': ['panelNetwork'],
     'desc-detail': ['panelDetail'],
     'desc-pipeline': ['panelPipeline'],
+    'desc-descent': ['panelDescent'],
   };
   for (const [cardId, secIds] of Object.entries(RMAP)) {
     const card = document.getElementById(cardId);
@@ -3192,6 +3449,7 @@ function init() {
     labels.splice(selectedPt, 1);
     tagged.splice(selectedPt, 1);
     selectPoint(-1);
+    markDescentDirty();
     requestRender();
   });
   $('#btnDismiss').addEventListener('click', () => {
@@ -3223,6 +3481,7 @@ function init() {
   ro.observe($('#layerCanvas'));
   ro.observe($('#archCanvas'));
   ro.observe($('#timelineCanvas'));
+  ro.observe($('#descentCanvas'));
 
   setInterval(() => {
     if (state.playing) {
@@ -3233,6 +3492,7 @@ function init() {
       render();
       needsRender = false;
     }
+    descentTick();
   }, TICK_MS);
 }
 

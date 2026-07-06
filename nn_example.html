@@ -505,6 +505,27 @@
       background: var(--surface);
     }
 
+    /* ---------------- gradient descent landscape ---------------- */
+    .descent-row {
+      display: flex;
+      gap: 18px;
+      align-items: center;
+      flex-wrap: wrap;
+      padding: 12px 2px 10px;
+    }
+
+    #descentCanvas {
+      width: min(320px, 100%);
+      aspect-ratio: 1;
+      flex: none;
+      border: 1px solid var(--hairline);
+      border-radius: 10px;
+      background: var(--surface);
+    }
+
+    .descent-side { flex: 1; min-width: 240px; margin: 0; }
+    #panelDescent[hidden] { display: none; }
+
     .pipe-item .nm { font: 600 11px var(--mono); color: var(--muted); }
     .pipe-item:hover canvas { border-color: rgba(255, 255, 255, 0.35); }
     .pipe-item.sel canvas { border-color: var(--ink); box-shadow: 0 0 0 1px var(--ink); }
@@ -1190,6 +1211,27 @@
       <div class="pipeline" id="pipeline"></div>
     </section>
 
+    <section class="pipeline-wrap" id="panelDescent" aria-label="Gradient descent loss landscape">
+      <header>
+        <h2
+          data-tip="Every weight setting has a loss; training walks downhill on that surface. The full surface has one dimension per weight, so this map is a 2-D slice through the current weights: d₁ follows the run's own recent travel, d₂ is a fixed random perpendicular. The loss is evaluated for real at every grid point.">
+          Gradient descent · loss landscape</h2>
+        <p class="pipeline-note" id="descentNote">mapping the loss landscape…</p>
+      </header>
+      <div class="descent-row">
+        <canvas id="descentCanvas">Your browser does not support canvas.</canvas>
+        <p class="hint descent-side">
+          A contour map of the loss in a 2-D slice of weight space, centered on the net —
+          <b>dark = low loss</b>, bright violet = high. The <b style="color:#c98500">gold dot</b> is
+          the current weights (it slides downhill between re-maps), the
+          <b style="color:#9085e9">violet trail</b> is the run's recent path projected onto the
+          slice, and the <b>white ring</b> marks the lowest mapped point nearby. Train and watch the
+          dot chase the ring into the dark basin — that's settling into a (local) minimum. The map
+          re-surveys itself as the run moves; the axes re-orient along the direction of travel.
+        </p>
+      </div>
+    </section>
+
     <footer>
       Built on <a href="http://cs.stanford.edu/people/karpathy/convnetjs">Andrej Karpathy’s convnetjs</a>.
       See <a href="https://mandpd.github.io/nn-example">the docs</a> for a guided walkthrough.
@@ -1365,6 +1407,66 @@
           </p>
         </section>
 
+        <section class="side-card" data-mode="pass" id="desc-pass-matrix">
+          <h3>Matrix view (the arithmetic)</h3>
+          <p>
+            While a pass runs, the right side of the network panel shows the calculation the
+            highlighted layer is executing — with the pass's real numbers, so every row multiplies
+            out. A layer is one line of linear algebra: <b>z&nbsp;=&nbsp;W·a&nbsp;+&nbsp;b</b>. The
+            weight matrix <b>W</b> has one <i>row per neuron</i> and one <i>column per input</i>
+            (its dimensions are printed underneath); <b>a</b> is the previous layer's output as a
+            column vector; <b>b</b> is the bias vector — one nudge per neuron. Row × column + bias
+            gives each neuron's weighted sum in <b>z</b>.
+          </p>
+          <p>
+            The next step applies the <b>activation element-wise</b>: z → a through relu/tanh/sigmoid
+            (relu simply zeroes the negatives), or softmax turning the final scores into the two
+            probabilities in <b>P</b>. When a layer is too wide to print, the view keeps the top-left
+            corner of the matrix and marks the rest with ⋯ and ⋮ — the true size stays in the dims
+            label. The same panel then re-uses this notation backwards: δa&nbsp;=&nbsp;Wᵀ·δz during
+            backprop, and W&nbsp;+&nbsp;ΔW&nbsp;=&nbsp;W′ at the update.
+          </p>
+        </section>
+
+        <section class="side-card" data-mode="pass" id="desc-pass-loss">
+          <h3>The loss function</h3>
+          <p>
+            The loss turns "how wrong was that?" into a single number:
+            <b>L&nbsp;=&nbsp;−log&nbsp;P[y]</b> — cross-entropy — where P[y] is the probability the
+            net gave the ride the PIREP actually reported. At the <b>loss</b> step the matrix view
+            plots that curve with the net's own (P[y],&nbsp;L) marked in gold, and a badge names the
+            loss under the output row — the loss lives just below the net, comparing its output
+            with the truth.
+          </p>
+          <p>
+            The shape of −log is the whole point: right and confident (P[y]&nbsp;→&nbsp;1) costs
+            nearly nothing; unsure costs a little; <b>confidently wrong</b> (P[y]&nbsp;→&nbsp;0)
+            runs up the cliff toward infinity. That asymmetry is what makes training spend its
+            effort on the reports it is getting wrong — a coin-flip answer sits near
+            L&nbsp;=&nbsp;−log&nbsp;0.5&nbsp;≈&nbsp;0.69, the value a fresh net hovers at.
+          </p>
+        </section>
+
+        <section class="side-card" data-mode="pass" id="desc-pass-backprop">
+          <h3>Backprop · the diff flows back</h3>
+          <p>
+            Backprop starts with a beautiful coincidence: for softmax + cross-entropy, the slope of
+            the loss at the output is simply <b>δz&nbsp;=&nbsp;P&nbsp;−&nbsp;y</b> — the forecast
+            minus the truth. No mystery quantity: <i>the diff itself is the error signal</i>. The
+            violet arrows under the output row show it being injected, and the matrix view computes
+            it from the real vectors.
+          </p>
+          <p>
+            From there the diff walks back down (up the diagram) one layer at a time:
+            <b>δa&nbsp;=&nbsp;Wᵀ·δz</b> — the very same weights that carried values forward, now
+            transposed, split the blame among the neurons that supplied them. Each neuron's violet
+            wash is its actual share; activations gate the flow (a relu that output 0 passes no
+            blame — dead neurons don't learn). When the diff reaches the bottom, every weight knows
+            its own slope, and <b>update</b> steps each one against it:
+            W&nbsp;←&nbsp;W&nbsp;−&nbsp;η·∂L/∂W.
+          </p>
+        </section>
+
         <section class="side-card" data-mode="infer" id="desc-infer">
           <h3>Inference</h3>
           <p>
@@ -1482,6 +1584,28 @@
             squash (tanh, sigmoid) it; softmax lines everything up on the probability diagonal.
             Read left to right to watch the two classes come apart. Click any stage to open it in the
             detail panel.
+          </p>
+        </section>
+
+        <section class="side-card" data-mode="epoch pass" id="desc-descent">
+          <h3>Loss landscape (gradient descent)</h3>
+          <p>
+            Training is descent on a surface: every possible setting of the weights has a loss, and
+            gradient descent walks downhill. The catch is that this net has ~40 weights, so the true
+            surface lives in ~40 dimensions. The landscape panel does the honest next-best thing:
+            it takes a <b>2-D slice</b> through the current weights — one axis (d₁) pointing along
+            the direction the run has actually been travelling, the other (d₂) a fixed random
+            perpendicular — and evaluates the <i>real training loss</i> at every point of that
+            plane. Dark is low loss; bright violet is high.
+          </p>
+          <p>
+            The <b style="color:#c98500">gold dot</b> is the net's current weights, sliding downhill
+            between re-maps; the <b style="color:#9085e9">violet trail</b> is the recent path of the
+            run projected onto the slice; the <b>white ring</b> marks the lowest point of the mapped
+            neighborhood. Watch a run settle: the trail shortens, the dot comes to rest inside the
+            dark basin on the ring — a (local) minimum. Reset the weights and the net drops
+            somewhere new on a different part of the surface; raise the learning rate and watch the
+            dot overshoot the valley instead of settling into it.
           </p>
         </section>
 

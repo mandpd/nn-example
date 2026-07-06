@@ -60,6 +60,7 @@ let archRows = [];         // network-diagram rows {y, idxs} for hit-testing
 let archNodes = [];        // network-diagram nodes {x, y, rowIdx, j}
 let archEdges = [];        // network-diagram edges {x1,y1,x2,y2, rowIdx, i, j}
 let archActs = [];         // network-diagram activation bands {y, rowIdx, actIdx, xMin, xMax}
+let archMatX = Infinity;   // left edge of the pass-mode matrix panel (clicks beyond it are ignored)
 
 const LR_STEPS = [0.0003, 0.001, 0.003, 0.01, 0.03, 0.1, 0.3];
 const L2_STEPS = [0, 0.0001, 0.001, 0.01];
@@ -681,6 +682,11 @@ function startPass(paused, atEnd) {
     });
   });
 
+  // the matrix annotation replays the forward/backward math, which ran on the
+  // PRE-update weights — the net now holds the post-update ones
+  const preByLi = {};
+  pre.forEach((s) => { preByLi[s.li] = s; });
+
   const rows = archLayout();
   const steps = [{ phase: 'sample' }];
   rows.forEach((r, ri) => {
@@ -695,7 +701,7 @@ function startPass(paused, atEnd) {
   steps.push({ phase: 'update' });
   steps.push({ phase: 'done' });
 
-  pass = { p, steps, si: 0, acts, grads, deltaByLi, dmax, loss: stats.loss, timer: null };
+  pass = { p, steps, si: 0, acts, grads, deltaByLi, dmax, preByLi, loss: stats.loss, timer: null };
   if (atEnd) pass.si = steps.length - 1; // arriving from a backwards step
   updatePassUI();
   requestRender();
@@ -1690,11 +1696,18 @@ function drawArch() {
   const probe = ps ? pass.p : (state.view.kind !== 'layer' ? probeIndex() : -1);
   if (probe >= 0 && !ps) forwardProbe(probe);
 
+  // single-pass mode: a live pass reserves a right-hand strip for the matrix
+  // view of the step being animated (skipped when the canvas is too narrow)
+  const showMat = !!ps && state.mode === 'pass' && !pass.inference && W >= 640;
+  const annW = showMat ? Math.min(360, Math.max(300, Math.round(W * 0.36))) : 0;
+  const netW = W - annW;
+  archMatX = showMat ? netW : Infinity;
+
   const padTop = probe >= 0 ? 44 : 34;
   const padBot = 42;
   const actGap = 30, actBox = 17;
   const maxCount = Math.max(...rows.map((r) => r.count));
-  const spacing = Math.min(52, (W - 150) / Math.max(maxCount - 1, 1));
+  const spacing = Math.min(52, (netW - 150) / Math.max(maxCount - 1, 1));
   const extra = rows.reduce((s, r) => s + (r.side ? actGap : 0), 0);
   const gapBetween = rows.length > 1 ? (H - padTop - padBot - extra) / (rows.length - 1) : 0;
   const nodeY = [], actY = [];
@@ -1704,7 +1717,7 @@ function drawArch() {
     actY[i] = r.side ? yCur + actGap : null;
     yCur = (r.side ? yCur + actGap : yCur) + gapBetween;
   });
-  const nodeX = (row, j) => W / 2 + (j - (row.count - 1) / 2) * spacing;
+  const nodeX = (row, j) => netW / 2 + (j - (row.count - 1) / 2) * spacing;
   const outY = (i) => actY[i] != null ? actY[i] : nodeY[i]; // where a row's output leaves
 
   archRows = rows.map((r, i) => ({ y: nodeY[i], idxs: r.idxs }));
@@ -1914,7 +1927,7 @@ function drawArch() {
       }
       ctx.fillStyle = actSel ? C.ink : C.muted;
       ctx.textAlign = 'right';
-      ctx.fillText(row.side, W - 10, yA + 4);
+      ctx.fillText(row.side, netW - 10, yA + 4);
       ctx.textAlign = 'left';
     }
 
@@ -1923,6 +1936,7 @@ function drawArch() {
   }
   ctx.globalAlpha = 1;
 
+  if (showMat) drawPassMatrixPanel(ctx, netW, W, H, rows);
   if (probe >= 0) drawProbeCaption(ctx, W, probe);
 }
 
@@ -1950,6 +1964,303 @@ function drawActGlyph(ctx, x, y, act) {
   ctx.stroke();
 }
 
+/* ---------------- pass-mode matrix annotation ----------------
+   A right-hand strip of the network canvas that shows the actual matrix
+   arithmetic behind the animation step on screen: W·a + b = z on the way
+   down, δa = Wᵀ·δz on the way back, W + ΔW = W′ at the update. Everything
+   is computed from the pass's captured pre-update snapshot so the printed
+   numbers really do multiply out. Wide layers are truncated to their
+   top-left block with ⋯/⋮/⋱ ellipses. */
+const MAT_FONT = '9.5px ui-monospace, Menlo, Consolas, monospace';
+const MAT_OP_FONT = '600 11px ui-monospace, Menlo, Consolas, monospace';
+const MAT_LBL_FONT = '600 10px ui-monospace, Menlo, Consolas, monospace';
+const MAT_ROW_H = 14;
+const MAT_MAX_ROWS = 5;    // larger → 4 shown + a ⋮ row
+const MAT_MAX_COLS = 3;    // wider  → 2 shown + a ⋯ column
+
+const fmtCell = (v) => {
+  if (v === 0) return '0.00';
+  const a = Math.abs(v);
+  if (a < 0.001) return v.toExponential(0); // tiny deltas/grads: '8e-4', not '-0.0000'
+  if (a < 0.01) return v.toFixed(4);
+  if (a < 0.1) return v.toFixed(3);
+  return v.toFixed(2);
+};
+
+function matTrunc(get, nRows, nCols) {
+  const rShown = nRows <= MAT_MAX_ROWS ? nRows : MAT_MAX_ROWS - 1;
+  const cShown = nCols <= MAT_MAX_COLS ? nCols : MAT_MAX_COLS - 1;
+  const cells = [];
+  for (let r = 0; r < rShown; r++) {
+    const row = [];
+    for (let c = 0; c < cShown; c++) row.push(fmtCell(get(r, c)));
+    if (cShown < nCols) row.push('⋯');
+    cells.push(row);
+  }
+  if (rShown < nRows) {
+    cells.push(cells[0].map((_, c) =>
+      cShown < nCols && c === cells[0].length - 1 ? '⋱' : '⋮'));
+  }
+  return { cells, dims: `${nRows}×${nCols}` };
+}
+
+function measureMat(ctx, M) {
+  ctx.font = MAT_FONT;
+  const cols = M.cells[0].length;
+  M.colW = [];
+  for (let c = 0; c < cols; c++) {
+    let w = 0;
+    for (const row of M.cells) w = Math.max(w, ctx.measureText(row[c]).width);
+    M.colW.push(w);
+  }
+  M.w = M.colW.reduce((a, b) => a + b, 0) + (cols - 1) * 8 + 14;
+  M.h = M.cells.length * MAT_ROW_H;
+}
+
+function drawMat(ctx, x, yMid, M) {
+  const top = yMid - M.h / 2;
+  ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(x + 4, top); ctx.lineTo(x, top);
+  ctx.lineTo(x, top + M.h); ctx.lineTo(x + 4, top + M.h);
+  ctx.moveTo(x + M.w - 4, top); ctx.lineTo(x + M.w, top);
+  ctx.lineTo(x + M.w, top + M.h); ctx.lineTo(x + M.w - 4, top + M.h);
+  ctx.stroke();
+  ctx.font = MAT_FONT;
+  ctx.textAlign = 'right';
+  for (let r = 0; r < M.cells.length; r++) {
+    const cy = top + r * MAT_ROW_H + MAT_ROW_H / 2 + 3;
+    let cx = x + 7;
+    for (let c = 0; c < M.cells[0].length; c++) {
+      cx += M.colW[c];
+      ctx.fillStyle = M.hiRow === r ? C.tag : (M.color || C.inkSec);
+      ctx.fillText(M.cells[r][c], cx, cy);
+      cx += 8;
+    }
+  }
+  ctx.textAlign = 'center';
+  ctx.font = MAT_LBL_FONT;
+  if (M.label) {
+    ctx.fillStyle = M.labelColor || C.ink;
+    ctx.fillText(M.label, x + M.w / 2, top - 7);
+  }
+  ctx.fillStyle = C.muted;
+  ctx.fillText(M.dims, x + M.w / 2, top + M.h + 13);
+  ctx.textAlign = 'left';
+}
+
+/* lay out matrices and operators left→right, wrapping before an operator when
+   a line overflows; each line is centered in the strip */
+function drawMatExpr(ctx, x0, x1, yMid, items) {
+  const GAP = 9, LABEL_H = 15, DIMS_H = 17, LINE_GAP = 14;
+  for (const it of items) {
+    if (it.kind === 'op') {
+      ctx.font = MAT_OP_FONT;
+      it.w = ctx.measureText(it.text).width;
+      it.h = 0;
+    } else measureMat(ctx, it);
+  }
+  // units = optional leading operator + the matrix it applies to
+  const units = [];
+  let pend = [];
+  for (const it of items) {
+    pend.push(it);
+    if (it.kind !== 'op') { units.push(pend); pend = []; }
+  }
+  if (pend.length) units.push(pend);
+  const unitW = (u) => u.reduce((s, it) => s + it.w, 0) + (u.length - 1) * GAP;
+  const maxW = x1 - x0;
+  const lines = [];
+  let line = [], w = 0;
+  for (const u of units) {
+    const need = (line.length ? GAP : 0) + unitW(u);
+    if (line.length && w + need > maxW) { lines.push(line); line = []; w = 0; }
+    line.push(u);
+    w += (line.length > 1 ? GAP : 0) + unitW(u);
+  }
+  if (line.length) lines.push(line);
+  const lineH = (ln) =>
+    Math.max(...ln.flat().map((it) => it.h || 0), MAT_ROW_H) + LABEL_H + DIMS_H;
+  const totH = lines.reduce((s, ln) => s + lineH(ln), 0) + (lines.length - 1) * LINE_GAP;
+  let y = yMid - totH / 2;
+  for (const ln of lines) {
+    const lh = lineH(ln);
+    const mid = y + LABEL_H + (lh - LABEL_H - DIMS_H) / 2;
+    const lw = ln.reduce((s, u) => s + unitW(u), 0) + (ln.length - 1) * GAP;
+    let x = x0 + Math.max(0, (maxW - lw) / 2);
+    for (const u of ln) {
+      for (const it of u) {
+        if (it.kind === 'op') {
+          ctx.font = MAT_OP_FONT;
+          ctx.fillStyle = C.muted;
+          ctx.fillText(it.text, x, mid + 4);
+        } else drawMat(ctx, x, mid, it);
+        x += it.w + GAP;
+      }
+    }
+    y += lh + LINE_GAP;
+  }
+}
+
+/* the numbers behind the current animation step */
+function passMatrixSpec(st, rows) {
+  const A = pass.acts;
+  const preF = (li) => {
+    const s = pass.preByLi && pass.preByLi[li];
+    return s ? s.filters : net.layers[li].filters.map((f) => f.w);
+  };
+  const preB = (li) => {
+    const s = pass.preByLi && pass.preByLi[li];
+    return s ? s.biases : net.layers[li].biases.w;
+  };
+  const vec = (arr, label, opts) =>
+    ({ kind: 'mat', label, ...matTrunc((r) => arr[r], arr.length, 1), ...opts });
+  const mat = (get, nR, nC, label, opts) =>
+    ({ kind: 'mat', label, ...matTrunc(get, nR, nC), ...opts });
+  const op = (t) => ({ kind: 'op', text: t });
+  const RES = { color: C.ink, labelColor: C.tag };
+
+  switch (st.phase) {
+    case 'sample':
+      return {
+        title: 'sample',
+        sub: 'the PIREP as a 2×1 column vector',
+        items: [vec(A[0], 'x')],
+        footer: 'x₁ = km east · x₂ = km north',
+      };
+    case 'forward': {
+      const row = rows[st.row];
+      if (st.row === 0) {
+        return {
+          title: 'forward · input',
+          sub: 'x enters the input layer',
+          items: [vec(A[0], 'x')],
+        };
+      }
+      if (st.stage === 'lin') {
+        const prev = rows[st.row - 1];
+        const aIn = A[prev.idxs[prev.idxs.length - 1]];
+        const F = preF(row.fcIdx);
+        const inLab = prev.label === 'input' ? 'x' : 'a';
+        return {
+          title: `forward · ${row.label}`,
+          sub: `z = W·${inLab} + b — one row of W per neuron`,
+          items: [
+            mat((r, c) => F[r][c], row.count, prev.count, 'W'),
+            op('·'), vec(aIn, inLab),
+            op('+'), vec(Array.from(preB(row.fcIdx)), 'b'),
+            op('='), vec(A[row.fcIdx], 'z', RES),
+          ],
+        };
+      }
+      const z = A[row.fcIdx], a = A[row.idxs[1]];
+      if (row.side === 'softmax') {
+        return {
+          title: 'forward · softmax',
+          sub: 'P = exp(z) / Σ exp(z)',
+          items: [vec(z, 'z'), op('→'), vec(a, 'P', RES)],
+          footer: 'two probabilities that sum to 1',
+        };
+      }
+      return {
+        title: `forward · ${row.side}`,
+        sub: `a = ${row.side}(z), applied element-wise`,
+        items: [vec(z, 'z'), op('→'), vec(a, 'a', RES)],
+      };
+    }
+    case 'loss': {
+      const P = A[net.layers.length - 1];
+      const y = labels[pass.p];
+      const onehot = Array.from(P, (_, i) => (i === y ? 1 : 0));
+      return {
+        title: 'loss · cross-entropy',
+        sub: 'L = −log P[y] — compare P with the truth y',
+        items: [vec(Array.from(P), 'P', { hiRow: y }), vec(onehot, 'y', { hiRow: y })],
+        footer: `L = −log(${fmt(P[y])}) = ${pass.loss.toFixed(3)}`,
+      };
+    }
+    case 'backward': {
+      const from = rows[st.row], to = rows[st.row + 1];
+      const F = preF(to.fcIdx);
+      const dz = pass.grads[to.fcIdx];
+      const da = pass.grads[from.idxs[from.idxs.length - 1]];
+      const outLab = st.row === 0 ? 'δx' : 'δa';
+      return {
+        title: `backward · ${from.label}`,
+        sub: `${outLab} = Wᵀ·δz — the same weights, transposed`,
+        items: [
+          mat((r, c) => F[c][r], from.count, to.count, 'Wᵀ'),
+          op('·'), vec(dz, 'δz'),
+          op('='), vec(da, outLab, RES),
+        ],
+        footer: `δz is ${to.label}'s error signal; W is ${to.label}'s weight matrix`,
+      };
+    }
+    case 'update':
+    case 'done': {
+      const row = rows[1];
+      const li = row.fcIdx;
+      const F = preF(li);
+      const d = pass.deltaByLi[li];
+      const cur = net.layers[li].filters;
+      const nC = rows[0].count;
+      return {
+        title: st.phase === 'done' ? 'pass complete · weights updated' : `update · ${row.label}`,
+        sub: 'W ← W + ΔW, where ΔW ≈ −η·∂L/∂W',
+        items: [
+          mat((r, c) => F[r][c], row.count, nC, 'W'),
+          op('+'), mat((r, c) => d[r][c], row.count, nC, 'ΔW'),
+          op('='), mat((r, c) => cur[r].w[c], row.count, nC, 'W′', RES),
+        ],
+        footer: `η = ${state.lr} · shown for ${row.label} — every layer updates the same way`,
+      };
+    }
+    default:
+      return null;
+  }
+}
+
+function drawPassMatrixPanel(ctx, x0, x1, H, rows) {
+  const spec = passMatrixSpec(pass.steps[pass.si], rows);
+  if (!spec) return;
+  ctx.strokeStyle = 'rgba(255,255,255,0.10)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(x0 + 0.5, 14);
+  ctx.lineTo(x0 + 0.5, H - 14);
+  ctx.stroke();
+
+  const px0 = x0 + 18, px1 = x1 - 14;
+  ctx.textAlign = 'left';
+  ctx.font = MAT_LBL_FONT;
+  ctx.fillStyle = C.tag;
+  ctx.fillText(spec.title.toUpperCase(), px0, 26);
+  ctx.fillStyle = C.muted;
+  ctx.font = MAT_FONT;
+  ctx.fillText(spec.sub, px0, 42);
+
+  // footer, word-wrapped to at most two lines above the bottom edge
+  let footH = 0;
+  if (spec.footer) {
+    const lines = [];
+    let cur = '';
+    for (const word of spec.footer.split(' ')) {
+      const next = cur ? cur + ' ' + word : word;
+      if (ctx.measureText(next).width > px1 - px0 && cur) { lines.push(cur); cur = word; }
+      else cur = next;
+    }
+    if (cur) lines.push(cur);
+    const shown = lines.slice(0, 2);
+    if (lines.length > 2) shown[1] += ' …';
+    ctx.fillStyle = C.muted;
+    shown.forEach((ln, i) => ctx.fillText(ln, px0, H - 14 - (shown.length - 1 - i) * 14));
+    footH = shown.length * 14 + 8;
+  }
+
+  drawMatExpr(ctx, px0, px1, 46 + (H - 46 - footH - 20) / 2, spec.items);
+}
+
 function segDist(px, py, x1, y1, x2, y2) {
   const dx = x2 - x1, dy = y2 - y1;
   const len2 = dx * dx + dy * dy;
@@ -1960,6 +2271,7 @@ function segDist(px, py, x1, y1, x2, y2) {
 
 function onArchClick(e) {
   const px = e.offsetX, py = e.offsetY;
+  if (px >= archMatX) return; // the matrix panel is display-only
   for (const n of archNodes) {
     if ((px - n.x) ** 2 + (py - n.y) ** 2 <= 13 * 13) { selectNode(n.rowIdx, n.j); return; }
   }

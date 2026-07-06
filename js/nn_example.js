@@ -577,7 +577,11 @@ function setMode(m) {
   $('#panelControls').classList.toggle('pass-mode', m === 'pass');
   $('#panelControls').classList.toggle('infer-mode', m === 'infer');
   document.querySelector('.viz').classList.toggle('passing', m === 'pass');
-  $('#panelDescent').hidden = m === 'infer'; // frozen weights: nothing descends
+  // frozen weights descend nowhere: inference hides the landscape everywhere
+  $('#panelDescent').hidden = m === 'infer';
+  $('#detTabDescent').hidden = m === 'infer';
+  if (m === 'infer' && detailTab === 'descent') detailTab = 'layer';
+  detailApplyTab();
   $('#describePane').dataset.mode = m; // Describe cards follow the visible panels
   // the side panel follows the mode: inference opens the decision guide
   $(m === 'infer' ? '#tabDecide' : '#tabIntro').click();
@@ -614,7 +618,11 @@ function syncPassRowHeight() {
     `display:flex; visibility:hidden; position:absolute; width:${colW}px;`;
   const h = feat.offsetHeight;
   feat.setAttribute('style', old);
-  viz.style.setProperty('--row-h', h + 'px');
+  // the detail panel carries a tab-note line the feature panel doesn't have —
+  // grant the row its height so the wordiest hints still fit when pinned
+  const note = $('#detailTabNote');
+  const extra = note ? Math.ceil(note.getBoundingClientRect().height) + 4 : 0;
+  viz.style.setProperty('--row-h', (h + extra) + 'px');
 }
 
 /* Run/Pause lifecycle for the pass animation */
@@ -1195,10 +1203,9 @@ function subsample(arr, n, s) {
 /* ---------------- render ---------------- */
 function render() {
   const featFit = fitCanvas($('#featCanvas'));
-  const layerFit = fitCanvas($('#layerCanvas'));
   field = computeField(featFit.w);
   drawFeature(featFit, field);
-  drawSelected(layerFit, field);
+  if (!$('#layerCanvas').hidden) drawSelected(fitCanvas($('#layerCanvas')), field);
   drawArch();
   drawMinis(field);
   drawSpark();
@@ -2590,10 +2597,43 @@ function descentTick() {
   descentCompute();
 }
 
+/* the detail panel hosts the landscape as its second tab */
+let detailTab = 'layer'; // 'layer' | 'descent'
+
+function detailApplyTab() {
+  const d = detailTab === 'descent';
+  $('#detTabLayer').setAttribute('aria-selected', String(!d));
+  $('#detTabDescent').setAttribute('aria-selected', String(d));
+  $('#layerCanvas').hidden = d;
+  $('#layerExpl').hidden = d;
+  $('#detailDescentCanvas').hidden = !d;
+  $('#detailDescentHint').hidden = !d;
+  $('#detailTabNote').textContent = d
+    ? '(see below for a description of this landscape)'
+    : '(select the layer to view from the selection in the panel below)';
+  if (d) {
+    $('#layerTitle').textContent = 'Gradient descent · loss landscape';
+    $('#cycleBtn').hidden = true;
+  } else {
+    updateSelectionUI(); // restores the selection's title, hint and ⟳ button
+  }
+  requestRender();
+}
+
+/* inspecting a component is a statement of intent: bring its view forward */
+function detailShowLayerTab() {
+  if (detailTab === 'layer') return;
+  detailTab = 'layer';
+  detailApplyTab();
+}
+
 function drawDescent() {
-  const panel = $('#panelDescent');
-  if (panel.hidden) return;
-  const { ctx, w: S } = fitCanvas($('#descentCanvas'));
+  if (!$('#panelDescent').hidden) drawDescentInto($('#descentCanvas'));
+  if (!$('#detailDescentCanvas').hidden) drawDescentInto($('#detailDescentCanvas'));
+}
+
+function drawDescentInto(cv) {
+  const { ctx, w: S } = fitCanvas(cv);
   ctx.fillStyle = C.surface;
   ctx.fillRect(0, 0, S, S);
   if (descent && descent.dims !== flatWeightCount()) descent = null;
@@ -2740,6 +2780,7 @@ function selectLayer(i) {
   state.lix = i;
   state.d0 = 0;
   state.d1 = Math.min(1, net.layers[i].out_depth - 1);
+  detailShowLayerTab();
   updateSelectionUI();
   requestRender();
 }
@@ -2748,6 +2789,7 @@ function selectNode(rowIdx, j) {
   const rows = archLayout();
   state.view = { kind: 'node', rowIdx, j };
   state.lix = rows[rowIdx].idxs[0];
+  detailShowLayerTab();
   updateSelectionUI();
   requestRender();
 }
@@ -2756,11 +2798,19 @@ function selectEdge(rowIdx, i, j) {
   const rows = archLayout();
   state.view = { kind: 'edge', rowIdx, i, j };
   state.lix = rows[rowIdx].fcIdx;
+  detailShowLayerTab();
   updateSelectionUI();
   requestRender();
 }
 
 function updateSelectionUI() {
+  // the landscape tab owns the header while it is up; the selection keeps
+  // driving the filmstrip highlight underneath
+  if (detailTab === 'descent') {
+    $('#cycleBtn').hidden = true;
+    minis.forEach((m, i) => m.el.classList.toggle('sel', i === state.lix));
+    return;
+  }
   const v = state.view;
   const btn = $('#cycleBtn');
   let title = '', expl = '';
@@ -3387,6 +3437,8 @@ function init() {
   window.addEventListener('resize', syncPassRowHeight);
   initTimelineScrub();
   $('#cycleBtn').addEventListener('click', cycleNeurons);
+  $('#detTabLayer').addEventListener('click', () => { detailTab = 'layer'; detailApplyTab(); });
+  $('#detTabDescent').addEventListener('click', () => { detailTab = 'descent'; detailApplyTab(); });
   initSidePanel();
   initModal();
   initFullscreen();

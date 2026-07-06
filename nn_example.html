@@ -424,6 +424,16 @@
       background: var(--surface);
     }
 
+    canvas.stage[hidden] { display: none; }
+
+    /* ---------- detail panel tabs (layer space | loss landscape) ---------- */
+    .detail-tabs { display: flex; gap: 6px; flex: none; }
+    .tab-note {
+      font: 11px/1.4 var(--mono);
+      color: var(--muted);
+      margin: -4px 2px 8px;
+    }
+
     #featCanvas { cursor: crosshair; }
 
     .hint { font: 12px/1.7 var(--mono); color: var(--muted); margin: 10px 2px 0; }
@@ -1197,9 +1207,22 @@
           <h2 id="layerTitle">Layer space</h2>
           <button id="cycleBtn" type="button" hidden class="tip-right"
             data-tip="This layer has more than two neurons, but the view can only plot two at a time. Cycle which pair forms the axes.">⟳ neurons 0·1</button>
+          <div class="detail-tabs" role="tablist" aria-label="Detail panel views">
+            <button id="detTabLayer" class="side-tab" type="button" role="tab"
+              aria-selected="true">layer space</button>
+            <button id="detTabDescent" class="side-tab" type="button" role="tab"
+              aria-selected="false">loss landscape</button>
+          </div>
         </header>
+        <p class="tab-note" id="detailTabNote">(select the layer to view from the selection in the panel below)</p>
         <canvas id="layerCanvas" class="stage">Your browser does not support canvas.</canvas>
         <p class="hint" id="layerExpl"></p>
+        <canvas id="detailDescentCanvas" class="stage" hidden>Your browser does not support canvas.</canvas>
+        <p class="hint" id="detailDescentHint" hidden>
+          <b style="color:#c98500">gold dot</b> = current weights ·
+          <b style="color:#9085e9">violet trail</b> = recent path ·
+          white ring = lowest mapped point · dark = low loss
+        </p>
       </section>
     </main>
 
@@ -1573,6 +1596,11 @@
           </p>
           <p>
             When a layer has more than two neurons, the ⟳ button cycles which pair forms the axes.
+          </p>
+          <p>
+            The panel's second tab, <b>loss landscape</b>, holds a copy of the gradient-descent map
+            from the panel at the bottom of the page — handy for watching the dot descend while a
+            run plays. Selecting any layer, neuron or weight flips back to the first tab.
           </p>
         </section>
 

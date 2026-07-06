@@ -1715,18 +1715,19 @@ function drawArch() {
   const probe = ps ? pass.p : (state.view.kind !== 'layer' ? probeIndex() : -1);
   if (probe >= 0 && !ps) forwardProbe(probe);
 
-  // single-pass mode: a live pass reserves a right-hand strip for the matrix
-  // view of the step being animated (skipped when the canvas is too narrow)
-  const showMat = !!ps && state.mode === 'pass' && !pass.inference && W >= 640;
+  // single-pass mode reserves a right-hand strip for the matrix view from the
+  // moment the mode opens — idle it shows the sample vector and a Run hint,
+  // during a pass the step being animated (skipped when the canvas is narrow)
+  const showMat = state.mode === 'pass' && W >= 640;
   const annW = showMat ? Math.min(360, Math.max(300, Math.round(W * 0.36))) : 0;
   const netW = W - annW;
   archMatX = showMat ? netW : Infinity;
 
   const padTop = probe >= 0 ? 44 : 34;
-  // a training pass reserves room under the output row for the loss badge
-  // and the δz = P − y injection arrows of the seed step
+  // pass mode also reserves room under the output row for the loss badge and
+  // the δz = P − y injection arrows, so starting a run never shifts the rows
   const isTrainPass = !!ps && !pass.inference;
-  const padBot = isTrainPass ? 80 : 42;
+  const padBot = state.mode === 'pass' ? 80 : 42;
   const actGap = 30, actBox = 17;
   const maxCount = Math.max(...rows.map((r) => r.count));
   const spacing = Math.min(52, (netW - 150) / Math.max(maxCount - 1, 1));
@@ -2294,8 +2295,20 @@ function passMatrixSpec(st, rows) {
   }
 }
 
+/* before Run is pressed: the strip shows the traced point ready to go */
+function passIdleMatrixSpec() {
+  const p = probeIndex();
+  if (p < 0) return null;
+  return {
+    title: 'matrix view',
+    sub: 'the arithmetic of each animation step',
+    items: [{ kind: 'mat', label: 'x', ...matTrunc((r) => data[p][r], 2, 1) }],
+    footer: 'press Run — every step’s calculation (W·a + b, the loss, δ = Wᵀ·δz, W + ΔW) plays out here',
+  };
+}
+
 function drawPassMatrixPanel(ctx, x0, x1, H, rows) {
-  const spec = passMatrixSpec(pass.steps[pass.si], rows);
+  const spec = pass ? passMatrixSpec(pass.steps[pass.si], rows) : passIdleMatrixSpec();
   if (!spec) return;
   ctx.strokeStyle = 'rgba(255,255,255,0.10)';
   ctx.lineWidth = 1;

@@ -82,8 +82,10 @@ starts over from new random values.
 **Weather** swaps the pattern behind the PIREPs — front, storm cell, cyclone bands,
 or patternless scattered convection. The **hidden layers** sliders and the
 **activation** menu change the architecture and rebuild the net from scratch. The
-**learning rate, momentum, batch size and L2** sliders retune the optimizer live,
-without touching what has been learned — watch the loss history react.
+**loss** menu swaps what "wrong" means (see
+[choosing the loss function](#choosing-the-loss-function)),
+and the **learning rate, momentum, batch size and L2** sliders retune the optimizer —
+all live, without touching what has been learned — watch the loss history react.
 
 Once a run starts, the page title gives way to the epoch timeline, and the dataset
 and architecture controls fade and lock until **Reset weights**. What can still be
@@ -215,7 +217,7 @@ doing, with the real numbers.
 
 On the expanded network diagram: during **forward**, each row lights up as the
 sample's real activations arrive; **loss** rings the reported grade's softmax box
-and prints −log P(truth); **backward** washes neurons violet by their share of the
+and prints the selected loss for the truth; **backward** washes neurons violet by their share of the
 blame; **update** redraws the connections that just changed — blue got stronger,
 orange got weaker, thickness shows how much. Everything stays clickable mid-pass.
 
@@ -238,11 +240,12 @@ backwards: δa = Wᵀ·δz during backprop, and W + ΔW = W′ at the update.
 
 ### The loss function
 
-The loss turns "how wrong was that?" into a single number: **L = −log P[y]** —
-cross-entropy — where P[y] is the probability the net gave the ride the PIREP
-actually reported. At the **loss** step the matrix view plots that curve with the
-net's own (P[y], L) marked in gold, and a badge names the loss under the output
-row — the loss lives just below the net, comparing its output with the truth.
+The loss turns "how wrong was that?" into a single number. With the default,
+cross-entropy, that number is **L = −log P[y]** — where P[y] is the probability the
+net gave the ride the PIREP actually reported. At the **loss** step the matrix view
+plots the selected loss as a curve over P[y] with the net's own (P[y], L) marked in
+gold, and a badge names the loss under the output row — the loss lives just below
+the net, comparing its output with the truth.
 
 The shape of −log is the whole point: right and confident (P[y] → 1) costs nearly
 nothing; unsure costs a little; **confidently wrong** (P[y] → 0) runs up the cliff
@@ -250,13 +253,81 @@ toward infinity. That asymmetry is what makes training spend its effort on the
 reports it is getting wrong — a coin-flip answer sits near L = −log 0.5 ≈ 0.69,
 the value a fresh net hovers at.
 
+### Choosing the loss function
+
+Cross-entropy is the standard choice for classification, but not the only feasible
+one. The right loss depends on what you want the classifier to *care about* — and
+because this demo outputs ok-vs-rough probabilities, you can watch each candidate
+reshape the same training run. The **Loss** menu applies live: the readout jumps to
+the new scale, the loss maps re-survey their terrain, and in single-pass mode the
+loss step shows the new formula with real numbers. Every option still trains
+through the same softmax head, so the probabilities every view reads stay
+available; only what "wrong" means changes.
+
+**Cross-entropy** (default) · L = −log P[y]. It lines up perfectly with
+probability outputs: high probability on the correct class costs nearly nothing,
+and confident wrong predictions run up a cliff toward infinity. Best
+general-purpose choice — every alternative below is a deliberate trade against it.
+
+**Weighted cross-entropy** · the same −log, but each class carries a price: here a
+missed *rough* report costs **2.5×** a false alarm. For the aviation metaphor that
+asymmetry is very reasonable — failing to warn about severe turbulence is worse
+than diverting unnecessarily. Watch the boundary get pushed into blue territory:
+the net would rather cry wolf than miss chop.
+
+**Label-smoothed cross-entropy** · trains against softened targets,
+**0.95 / 0.05** instead of 1 / 0 (ε = 0.1). PIREPs are subjective — smoothing says
+"do not become infinitely certain from imperfect labels." The net keeps a sliver
+of doubt everywhere, which often generalizes better; the loss never reaches 0,
+even when perfectly right.
+
+**KL divergence** · matches a full target *distribution* rather than a hard class
+— here **0.9 / 0.1**, as if 9 of 10 pilots agreed on each grade. The gradient is
+the same P − q diff as cross-entropy with soft labels; the value differs — it
+reads 0 exactly when P equals the target. Useful whenever the label itself is
+uncertain or comes from another model (distillation).
+
+**Focal loss** · cross-entropy times **(1−P[y])²** (γ = 2). Reports the net
+already gets right are damped toward zero loss, so training spends its effort on
+the hard or rare ones. Made for imbalance — try deleting most of the rough PIREPs
+and compare how plain cross-entropy coasts on the easy ok region while focal keeps
+digging at the stragglers. The trade: it gives up gradient on easy examples it has
+nearly won.
+
+**Mean squared error** · treat the label as a number and punish (P − truth)².
+Simple and feasible, but usually worse for classification: predicting 0.01 for the
+true class is "bad" to MSE (loss ≈ 2) where cross-entropy calls it catastrophic
+(loss ≈ 4.6) — and its gradient fades at saturated outputs, so confidently-wrong
+nets learn slowly. Expect slower, less decisive training here.
+
+**Hinge loss** · the classic SVM loss, scored on the raw class scores z, not the
+probabilities: L = max(0, 1 − z[correct] + z[wrong]). Don't just call it rough —
+call it rough *by a comfortable margin*. Once a report clears the margin its
+gradient switches off entirely, so well-classified PIREPs stop shaping the
+boundary at all.
+
+**Squared hinge** · the same margin, squared:
+max(0, 1 − z[correct] + z[wrong])². Large margin violations hurt much more, and
+the loss fades smoothly to zero at the margin instead of meeting it at a kink — a
+common variant in margin-based classifiers.
+
+A rough ranking for this demo: **cross-entropy** as the general-purpose default ·
+**weighted CE** if rough air is rare or safety-critical · **focal** when many easy
+examples drown a few hard ones · **hinge** for margin-based classification ·
+**MSE** feasible but usually not ideal. Cross-entropy stays popular because it
+rewards exactly what a probability output should do: put mass on the truth. In
+single-pass mode the loss step, its plotted curve, and the injected error signal
+δz all follow the selection.
+
 ### Backprop · the diff flows back
 
-Backprop starts with a beautiful coincidence: for softmax + cross-entropy, the
-slope of the loss at the output is simply **δz = P − y** — the forecast minus the
-truth. No mystery quantity: *the diff itself is the error signal*. The violet
-arrows under the output row show it being injected, and the matrix view computes
-it from the real vectors.
+Backprop starts with a beautiful coincidence: for softmax + cross-entropy (the
+default loss), the slope of the loss at the output is simply **δz = P − y** — the
+forecast minus the truth. No mystery quantity: *the diff itself is the error
+signal*. The violet arrows under the output row show it being injected, and the
+matrix view computes it from the real vectors. Other losses inject their own δz —
+a class-weighted diff, a softened-target diff, a damped one, or hinge's flat ±1 —
+and the seed step spells out whichever is active.
 
 From there the diff walks back one layer at a time: **δa = Wᵀ·δz** — the very same
 weights that carried values forward, now transposed, split the blame among the
@@ -305,8 +376,9 @@ practitioners train with several seeds.
 **Change the ingredients.** Train the same data under each **activation** and
 compare filmstrips: relu creases the grid along straight lines, tanh and sigmoid
 bend it smoothly. Then abuse the optimizer: a learning rate 10× higher or lower,
-momentum 0.9, batch size 1 versus 50, heavy L2 decay. The rate sliders apply live,
-so the loss history shows each change's effect instantly.
+momentum 0.9, batch size 1 versus 50, heavy L2 decay. The rate sliders and the
+**loss** menu apply live, so the loss history shows each change's effect instantly —
+switch the loss mid-run and watch the same weights get judged by a different ruler.
 
 **Beyond this demo.** Explore the
 [other convnetjs examples](https://cs.stanford.edu/people/karpathy/convnetjs/) —
@@ -330,7 +402,8 @@ phases at your own pace, in either direction. Esc returns to epoch mode.
 
 **Watch a mistake get corrected.** Tag a PIREP sitting in the wrong-colored region
 and run a pass. At **loss**, the true class's softmax box rings gold and the
-caption spells out loss = −log P(truth) — large when the net is confidently wrong.
+caption spells out the selected loss — with the default cross-entropy,
+loss = −log P(truth), large when the net is confidently wrong.
 Then watch **update**: thick orange slashes the weights that fed the wrong answer
 through the active neurons, while thick blue reinforces the path toward the right
 one. That is the whole learning rule, drawn.

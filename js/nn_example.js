@@ -38,6 +38,7 @@ const MAX_HIDDEN_LAYERS = 4;
 const state = {
   hidden: [4, 4],          // neurons per hidden layer
   activation: 'relu',
+  lossFn: 'ce',            // key into LOSS_FNS — what "wrong" means
   lr: 0.003, momentum: 0.1, batch: 10, l2: 0.001,
   dataset: 'circle',
   overlay: true,           // shade prediction regions
@@ -66,6 +67,217 @@ let showDescribeCard = null; // set by initSidePanel: jump to a Describe card + 
 const LR_STEPS = [0.0003, 0.001, 0.003, 0.01, 0.03, 0.1, 0.3];
 const L2_STEPS = [0, 0.0001, 0.001, 0.01];
 const BATCH_STEPS = [1, 2, 5, 10, 20, 50];
+
+/* ---------------- loss functions ----------------
+   Every option trains through the same softmax head, so P = softmax(z) stays
+   available to every view; only what "wrong" means changes. Each entry gives
+   the loss value and its gradient wrt the raw class scores z — exactly what
+   the patched softmax backward must inject as δz. curve(p) is L as a function
+   of P[y] for the matrix view's plot; for the margin losses that works because
+   with two classes z[y] − z[other] = logit(P[y]), so the plot stays exact. */
+const FOCAL_GAMMA = 2;    // the standard focusing exponent
+const WCE_WEIGHTS = { [CAT]: 2.5, [DOG]: 1 }; // missing rough air costs 2.5× a false alarm
+const LS_EPS = 0.1;       // smoothed one-hots become 0.95 / 0.05
+const KL_Q = 0.9;         // soft target: "9 of 10 pilots called it rough"
+const MARGIN = 1;         // hinge: be right by at least this much
+
+const clP = (p) => Math.min(Math.max(p, 1e-12), 1 - 1e-12);
+const oneHot = (y, K) => Array.from({ length: K }, (_, i) => (i === y ? 1 : 0));
+const smoothHot = (y, K) => Array.from({ length: K }, (_, i) => LS_EPS / K + (i === y ? 1 - LS_EPS : 0));
+const softHot = (y, K) => Array.from({ length: K }, (_, i) => (i === y ? KL_Q : (1 - KL_Q) / (K - 1)));
+const logit = (p) => Math.log(clP(p) / (1 - clP(p)));
+
+/* dL/dP chained through the softmax Jacobian → dL/dz */
+function chainSoftmax(P, gP, dz) {
+  let dot = 0;
+  for (let k = 0; k < P.length; k++) dot += P[k] * gP[k];
+  for (let i = 0; i < P.length; i++) dz[i] = P[i] * (gP[i] - dot);
+}
+
+const LOSS_FNS = {
+  ce: {
+    label: 'cross-entropy',
+    formula: 'L = −log P[y] — compare P with the truth y',
+    formulaShort: 'L = −log P[y]',
+    targetLabel: 'y', target: oneHot, exactDiff: true,
+    seedSub: 'δz = P − y — the diff IS the error signal',
+    seedShort: 'δz = P − y',
+    seedNote: 'With softmax + cross-entropy its slope at the output is simply P − y — forecast minus truth.',
+    seedFooter: 'softmax + cross-entropy make ∂L/∂z exactly this diff; it now flows back through every layer',
+    curveLabel: 'L = −log p',
+    curve: (p) => -Math.log(clP(p)),
+    value: (P, z, y) => -Math.log(clP(P[y])),
+    grad(P, z, y, dz) { for (let i = 0; i < P.length; i++) dz[i] = P[i] - (i === y ? 1 : 0); },
+    footerMath: (P, z, y, L) => `L = −log(${fmt(P[y])}) = ${L.toFixed(3)}`,
+  },
+  wce: {
+    label: 'weighted cross-entropy',
+    formula: 'L = −w[y]·log P[y] — rough mistakes cost 2.5×',
+    formulaShort: 'L = −w[y]·log P[y], w(rough) = 2.5, w(ok) = 1',
+    targetLabel: 'y', target: oneHot, exactDiff: false,
+    seedSub: 'δz = w[y]·(P − y) — the diff, scaled by the class weight',
+    seedShort: 'δz = w[y]·(P − y)',
+    seedNote: 'It is the cross-entropy diff P − y scaled by the class weight — a missed rough report pushes back 2.5× harder.',
+    seedFooter: 'the class weight w[y] multiplies the whole error signal; rough PIREPs get 2.5× the gradient',
+    curveLabel: 'L = −w[y]·log p',
+    curve: (p, y) => -WCE_WEIGHTS[y] * Math.log(clP(p)),
+    value: (P, z, y) => -WCE_WEIGHTS[y] * Math.log(clP(P[y])),
+    grad(P, z, y, dz) {
+      const w = WCE_WEIGHTS[y];
+      for (let i = 0; i < P.length; i++) dz[i] = w * (P[i] - (i === y ? 1 : 0));
+    },
+    footerMath: (P, z, y, L) => `L = −${WCE_WEIGHTS[y]}·log(${fmt(P[y])}) = ${L.toFixed(3)}`,
+  },
+  lsce: {
+    label: 'label-smoothed cross-entropy',
+    formula: 'L = −Σ q·log P — targets softened to 0.95 / 0.05',
+    formulaShort: 'L = −Σ q·log P with q = [0.95, 0.05]',
+    targetLabel: 'q', target: smoothHot, exactDiff: true,
+    seedSub: 'δz = P − q — the diff against the softened target',
+    seedShort: 'δz = P − q',
+    seedNote: 'Its slope is P − q, the diff against the softened target — the net is never asked to reach probability 1.',
+    seedFooter: 'same clean diff as cross-entropy, but against q = 0.95/0.05 — perfect confidence always keeps a little loss',
+    curveLabel: 'L = −Σ q·log p',
+    curve: (p) => -((1 - LS_EPS / 2) * Math.log(clP(p)) + (LS_EPS / 2) * Math.log(clP(1 - p))),
+    value(P, z, y) {
+      const q = smoothHot(y, P.length);
+      let L = 0;
+      for (let i = 0; i < P.length; i++) L -= q[i] * Math.log(clP(P[i]));
+      return L;
+    },
+    grad(P, z, y, dz) {
+      const q = smoothHot(y, P.length);
+      for (let i = 0; i < P.length; i++) dz[i] = P[i] - q[i];
+    },
+    footerMath: (P, z, y, L) => `L = −(0.95·log ${fmt(P[y])} + 0.05·log ${fmt(1 - P[y])}) = ${L.toFixed(3)}`,
+  },
+  kl: {
+    label: 'KL divergence',
+    formula: 'L = Σ q·log(q/P) — match a soft target, q = 0.9 / 0.1',
+    formulaShort: 'L = Σ q·log(q/P) with q = [0.9, 0.1]',
+    targetLabel: 'q', target: softHot, exactDiff: true,
+    seedSub: 'δz = P − q — the diff against the target distribution',
+    seedShort: 'δz = P − q',
+    seedNote: 'Its slope is P − q — the diff against the soft target distribution, as if 9 of 10 pilots agreed on the grade.',
+    seedFooter: 'matching a distribution gives the same diff as cross-entropy with soft labels; L reaches 0 when P equals q',
+    curveLabel: 'L = Σ q·log(q/p)',
+    curve(p) {
+      const q = KL_Q, r = 1 - KL_Q;
+      return q * Math.log(q / clP(p)) + r * Math.log(r / clP(1 - p));
+    },
+    value(P, z, y) {
+      const q = softHot(y, P.length);
+      let L = 0;
+      for (let i = 0; i < P.length; i++) if (q[i] > 0) L += q[i] * Math.log(q[i] / clP(P[i]));
+      return L;
+    },
+    grad(P, z, y, dz) {
+      const q = softHot(y, P.length);
+      for (let i = 0; i < P.length; i++) dz[i] = P[i] - q[i];
+    },
+    footerMath: (P, z, y, L) => `q = [0.9, 0.1] · L = 0.9·log(0.9/${fmt(P[y])}) + 0.1·log(0.1/${fmt(1 - P[y])}) = ${L.toFixed(3)}`,
+  },
+  focal: {
+    label: 'focal loss',
+    formula: 'L = −(1−P[y])²·log P[y] — easy examples fade out',
+    formulaShort: 'L = −(1−P[y])²·log P[y] (γ = 2)',
+    targetLabel: 'y', target: oneHot, exactDiff: false,
+    seedSub: 'δz — cross-entropy’s diff, damped when P[y] is already high',
+    seedShort: 'δz ≈ (1−P[y])²·(P − y)',
+    seedNote: 'It is cross-entropy’s P − y damped by (1−P[y])² — reports the net already gets right send back almost nothing, so training focuses on the hard ones.',
+    seedFooter: 'the (1−P[y])² factor mutes gradients from easy examples; only the hard or rare reports push hard',
+    curveLabel: 'L = −(1−p)²·log p',
+    curve: (p) => -Math.pow(1 - clP(p), FOCAL_GAMMA) * Math.log(clP(p)),
+    value: (P, z, y) => -Math.pow(1 - clP(P[y]), FOCAL_GAMMA) * Math.log(clP(P[y])),
+    grad(P, z, y, dz) {
+      const p = clP(P[y]);
+      const g = FOCAL_GAMMA * Math.pow(1 - p, FOCAL_GAMMA - 1) * Math.log(p)
+        - Math.pow(1 - p, FOCAL_GAMMA) / p; // dL/dP[y]
+      for (let i = 0; i < P.length; i++) dz[i] = g * p * ((i === y ? 1 : 0) - P[i]);
+    },
+    footerMath: (P, z, y, L) => `L = −(1−${fmt(P[y])})²·log(${fmt(P[y])}) = ${L.toFixed(3)}`,
+  },
+  mse: {
+    label: 'mean squared error',
+    formula: 'L = Σ (P − y)² — punish the squared probability gap',
+    formulaShort: 'L = Σ (P − y)²',
+    targetLabel: 'y', target: oneHot, exactDiff: false,
+    seedSub: 'δz = 2(P − y) through the softmax — a gentler push',
+    seedShort: 'δz from 2(P − y)',
+    seedNote: 'It is 2(P − y) squeezed through the softmax’s slope — unlike cross-entropy the push fades near 0 and 1, so confident mistakes are punished gently.',
+    seedFooter: 'the squared-error gradient must chain through softmax; it vanishes at saturated outputs — MSE’s classic weakness for classification',
+    curveLabel: 'L = 2(1−p)²',
+    curve: (p) => 2 * Math.pow(1 - clP(p), 2),
+    value(P, z, y) {
+      let L = 0;
+      for (let i = 0; i < P.length; i++) { const d = P[i] - (i === y ? 1 : 0); L += d * d; }
+      return L;
+    },
+    grad(P, z, y, dz) {
+      const gP = new Float64Array(P.length);
+      for (let i = 0; i < P.length; i++) gP[i] = 2 * (P[i] - (i === y ? 1 : 0));
+      chainSoftmax(P, gP, dz);
+    },
+    footerMath: (P, z, y, L) => `L = (${fmt(P[y])}−1)² + (${fmt(1 - P[y])}−0)² = ${L.toFixed(3)}`,
+  },
+  hinge: {
+    label: 'hinge loss',
+    margin: true,
+    formula: 'L = max(0, 1 − z[y] + z[other]) — win by a margin',
+    formulaShort: 'L = max(0, 1 − z[y] + z[other]), on the raw scores',
+    targetLabel: 'y', target: oneHot, exactDiff: false,
+    seedSub: 'δz = ±1 while the margin is violated, 0 once it is met',
+    seedShort: 'δz = ±1 inside the margin',
+    seedNote: 'While the correct score fails to beat the wrong one by the margin, a flat ±1 is injected — once the margin is met the gradient switches off entirely.',
+    seedFooter: 'hinge skips the softmax and pushes the raw scores apart; satisfied margins send back nothing',
+    curveLabel: 'L = max(0, 1 − logit p)',
+    curve: (p) => Math.max(0, MARGIN - logit(p)),
+    value(P, z, y) {
+      let L = 0;
+      for (let j = 0; j < z.length; j++) if (j !== y) L += Math.max(0, MARGIN - z[y] + z[j]);
+      return L;
+    },
+    grad(P, z, y, dz) {
+      for (let j = 0; j < z.length; j++) {
+        if (j === y) continue;
+        if (MARGIN - z[y] + z[j] > 0) { dz[j] += 1; dz[y] -= 1; }
+      }
+    },
+    footerMath: (P, z, y, L) => `L = max(0, 1 − ${fmt(z[y])} + ${fmt(z[1 - y])}) = ${L.toFixed(3)}`,
+  },
+  sqhinge: {
+    label: 'squared hinge loss',
+    margin: true,
+    formula: 'L = max(0, 1 − z[y] + z[other])² — big violations hurt more',
+    formulaShort: 'L = max(0, 1 − z[y] + z[other])²',
+    targetLabel: 'y', target: oneHot, exactDiff: false,
+    seedSub: 'δz = ±2v while the margin is violated by v, 0 once met',
+    seedShort: 'δz = ±2·violation',
+    seedNote: 'The push scales with the violation — 2v where v is how far the margin is missed — so large margin mistakes are punished much harder, and it fades smoothly to 0 at the margin.',
+    seedFooter: 'like hinge on the raw scores, but the gradient grows with the violation instead of staying flat',
+    curveLabel: 'L = max(0, 1 − logit p)²',
+    curve: (p) => Math.pow(Math.max(0, MARGIN - logit(p)), 2),
+    value(P, z, y) {
+      let L = 0;
+      for (let j = 0; j < z.length; j++) {
+        if (j === y) continue;
+        const v = Math.max(0, MARGIN - z[y] + z[j]);
+        L += v * v;
+      }
+      return L;
+    },
+    grad(P, z, y, dz) {
+      for (let j = 0; j < z.length; j++) {
+        if (j === y) continue;
+        const v = MARGIN - z[y] + z[j];
+        if (v > 0) { dz[j] += 2 * v; dz[y] -= 2 * v; }
+      }
+    },
+    footerMath: (P, z, y, L) => `L = max(0, 1 − ${fmt(z[y])} + ${fmt(z[1 - y])})² = ${L.toFixed(3)}`,
+  },
+};
+
+const lossFn = () => LOSS_FNS[state.lossFn] || LOSS_FNS.ce;
 
 const $ = (s) => document.querySelector(s);
 const SUBS = '₀₁₂₃₄₅₆₇₈₉';
@@ -142,6 +354,7 @@ function buildNet() {
   defs.push({ type: 'softmax', num_classes: 2 });
   net = new convnetjs.Net();
   net.makeLayers(defs);
+  patchLossHead();
   buildTrainer();
   clearPass();
   setRunActive(false); // fresh weights: title returns until the next run starts
@@ -156,6 +369,22 @@ function buildNet() {
   updateSelectionUI();
   markDescentDirty();
   requestRender();
+}
+
+/* swap the softmax head's built-in cross-entropy backward for a dispatch on
+   the selected loss. forward is untouched — every view keeps reading the same
+   probabilities P — only the loss value and the injected δz change. Reads
+   state.lossFn at call time, so switching losses applies live, mid-run. */
+function patchLossHead() {
+  const head = net.layers[net.layers.length - 1];
+  head.backward = function (y) {
+    const x = this.in_act;
+    const dz = new Float64Array(x.w.length);
+    const fn = lossFn();
+    fn.grad(this.es, x.w, y, dz);
+    x.dw = dz;
+    return fn.value(this.es, x.w, y);
+  };
 }
 
 function buildTrainer() {
@@ -218,6 +447,8 @@ function applyRunLocks() {
   const frozen = runActive && !state.playing;
   ['lrSlider', 'momentumSlider', 'batchSlider', 'l2Slider']
     .forEach((id) => { $('#' + id).disabled = frozen; });
+  // the loss is an optimizer dial too: retune live, but not on a frozen snapshot
+  $('#lossSel').disabled = frozen;
 }
 
 function timelineCeiling(e) {
@@ -830,10 +1061,11 @@ function passCaption(st) {
     case 'loss': {
       const P = pass.acts[net.layers.length - 1][labels[p]];
       const short = labels[p] === DOG ? 'ok' : 'rough';
-      return `Loss · the net says P(${short}) = ${fmt(P)}; the PIREP said “${short}”. Loss = −log(${fmt(P)}) = ${pass.loss.toFixed(3)} — the more right the net is, the smaller this gets.`;
+      const fn = lossFn();
+      return `Loss (${fn.label}) · the net says P(${short}) = ${fmt(P)}; the PIREP said “${short}”. ${fn.formulaShort} → L = ${pass.loss.toFixed(3)} — the more right the net is, the smaller this gets.`;
     }
     case 'backward':
-      if (st.seed) return 'Backward · first the loss becomes an error signal. With softmax + cross-entropy its slope at the output is simply P − y — forecast minus truth. That diff is injected at the output (violet) and now flows back up.';
+      if (st.seed) return `Backward · first the loss becomes an error signal. ${lossFn().seedNote} That signal is injected at the output (violet) and now flows back up.`;
       return `Backward · the loss gradient flows back through ${rows[st.row].label} along the same weights — brighter violet = more responsibility for the error.`;
     case 'update':
       return `Update · every weight steps against its gradient (learning rate ${state.lr}): blue connections just got stronger, orange got weaker — thickness shows how much.`;
@@ -1968,7 +2200,7 @@ function drawArch() {
     ctx.font = '600 11px ui-monospace, Menlo, monospace';
     if (ps.seed) {
       ctx.fillStyle = C.spark;
-      ctx.fillText('δz = P − y · the diff heads back up', netW / 2, yBadge);
+      ctx.fillText(`${lossFn().seedShort} · the diff heads back up`, netW / 2, yBadge);
       const yTip = (actY[rows.length - 1] ?? nodeY[rows.length - 1]) + 26;
       ctx.strokeStyle = C.spark;
       ctx.lineWidth = 1.4;
@@ -1987,9 +2219,8 @@ function drawArch() {
         ctx.fill();
       }
     } else {
-      const P = pass.acts[net.layers.length - 1][labels[pass.p]];
       ctx.fillStyle = C.tag;
-      ctx.fillText(`loss L = −log(${fmt(P)}) = ${pass.loss.toFixed(3)}`, netW / 2, yBadge);
+      ctx.fillText(`${lossFn().label} · L = ${pass.loss.toFixed(3)}`, netW / 2, yBadge);
     }
     ctx.textAlign = 'left';
   }
@@ -2228,31 +2459,44 @@ function passMatrixSpec(st, rows) {
       };
     }
     case 'loss': {
+      const fn = lossFn();
       const P = A[net.layers.length - 1];
+      const z = A[net.layers.length - 2];
       const y = labels[pass.p];
-      const onehot = Array.from(P, (_, i) => (i === y ? 1 : 0));
+      const items = fn.margin
+        ? [vec(Array.from(z), 'z', { hiRow: y })] // hinge scores the raw z, not P
+        : [vec(Array.from(P), 'P', { hiRow: y }),
+           vec(fn.target(y, P.length), fn.targetLabel, { hiRow: y })];
       return {
-        title: 'loss · cross-entropy',
-        sub: 'L = −log P[y] — compare P with the truth y',
-        items: [vec(Array.from(P), 'P', { hiRow: y }), vec(onehot, 'y', { hiRow: y })],
-        footer: `L = −log(${fmt(P[y])}) = ${pass.loss.toFixed(3)}`,
-        graph: { p: P[y], loss: pass.loss },
+        title: `loss · ${fn.label}`,
+        sub: fn.formula,
+        items,
+        footer: fn.footerMath(P, z, y, pass.loss),
+        graph: { p: P[y], loss: pass.loss, y },
       };
     }
     case 'backward': {
       if (st.seed) {
+        const fn = lossFn();
         const P = A[net.layers.length - 1];
+        const z = A[net.layers.length - 2];
         const y = labels[pass.p];
-        const onehot = Array.from(P, (_, i) => (i === y ? 1 : 0));
         const out = rows[rows.length - 1];
+        const dz = vec(pass.grads[out.fcIdx], 'δz', RES);
+        // only the P − q family is literally a subtraction; the rest show
+        // what goes in (P and the target, or the raw scores) → what comes out
+        const items = fn.margin
+          ? [vec(Array.from(z), 'z', { hiRow: y }), op('→'), dz]
+          : fn.exactDiff
+            ? [vec(Array.from(P), 'P'), op('−'),
+               vec(fn.target(y, P.length), fn.targetLabel, { hiRow: y }), op('='), dz]
+            : [vec(Array.from(P), 'P'),
+               vec(fn.target(y, P.length), fn.targetLabel, { hiRow: y }), op('→'), dz];
         return {
           title: 'backward · loss gradient',
-          sub: 'δz = P − y — the diff IS the error signal',
-          items: [
-            vec(Array.from(P), 'P'), op('−'), vec(onehot, 'y', { hiRow: y }),
-            op('='), vec(pass.grads[out.fcIdx], 'δz', RES),
-          ],
-          footer: 'softmax + cross-entropy make ∂L/∂z exactly this diff; it now flows back through every layer',
+          sub: fn.seedSub,
+          items,
+          footer: fn.seedFooter,
         };
       }
       const from = rows[st.row], to = rows[st.row + 1];
@@ -2351,6 +2595,7 @@ function drawPassMatrixPanel(ctx, x0, x1, H, rows) {
 }
 
 function drawLossCurve(ctx, x0, x1, yTop, hBox, g) {
+  const fn = lossFn();
   const gx = x0 + 26, gw = x1 - x0 - 40, gy = yTop + 10, gh = hBox - 40;
   const LMAX = 3;
   const mx = (p) => gx + p * gw;
@@ -2363,15 +2608,19 @@ function drawLossCurve(ctx, x0, x1, yTop, hBox, g) {
   ctx.strokeStyle = C.inkSec;
   ctx.lineWidth = 1.3;
   ctx.beginPath();
-  const pMin = Math.exp(-LMAX); // where −log p leaves the plotted range
-  for (let k = 0; k <= 60; k++) {
-    const p = pMin + k / 60 * (1 - pMin);
-    const px = mx(p), py = my(-Math.log(p));
-    if (k === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  // trace the selected loss as a function of P[y]; skip where it climbs off
+  // the top of the plot (losses like −log run to infinity at p → 0)
+  let pen = false;
+  for (let k = 0; k <= 120; k++) {
+    const p = 0.001 + k / 120 * 0.998;
+    const L = fn.curve(p, g.y);
+    if (L > LMAX) { pen = false; continue; }
+    const px = mx(p), py = my(L);
+    if (!pen) { ctx.moveTo(px, py); pen = true; } else ctx.lineTo(px, py);
   }
   ctx.stroke();
   // dashed guides to the axes, then the net's current (P[y], L)
-  const dx = mx(Math.max(g.p, pMin)), dy = my(g.loss);
+  const dx = mx(Math.max(g.p, 0.001)), dy = my(g.loss);
   ctx.strokeStyle = 'rgba(255,255,255,0.25)';
   ctx.setLineDash([3, 3]);
   ctx.beginPath();
@@ -2384,7 +2633,7 @@ function drawLossCurve(ctx, x0, x1, yTop, hBox, g) {
   ctx.fill();
   ctx.font = MAT_FONT;
   ctx.fillStyle = C.muted;
-  ctx.fillText('L = −log p', gx + 6, gy + 4);
+  ctx.fillText(fn.curveLabel, gx + 6, gy + 4);
   ctx.textAlign = 'center';
   ctx.fillText('0', gx, gy + gh + 12);
   ctx.fillText('1', gx + gw, gy + gh + 12);
@@ -2553,12 +2802,14 @@ function descentDirections() {
 }
 
 function descentLossHere(v, step) {
+  const fn = lossFn();
+  const zLayer = net.layers[net.layers.length - 2]; // raw scores feeding softmax
   let sum = 0, cnt = 0;
   for (let k = 0; k < data.length; k += step) {
     v.w[0] = data[k][0];
     v.w[1] = data[k][1];
-    const P = net.forward(v, false).w[labels[k]];
-    sum += -Math.log(Math.max(P, 1e-12));
+    const P = net.forward(v, false).w;
+    sum += fn.value(P, zLayer.out_act.w, labels[k]);
     cnt++;
   }
   return sum / cnt;
@@ -2945,6 +3196,7 @@ function takeSnapshot() {
     weather: state.dataset,
     hidden: state.hidden.slice(),
     activation: state.activation,
+    lossFn: state.lossFn,
     lr: state.lr,
     momentum: state.momentum,
     batch: state.batch,
@@ -2981,7 +3233,8 @@ function renderLogbook() {
   $('#logbookHint').innerHTML =
     `${clock} · ${b(e.view)}<br>`
     + `epoch ${b(e.epoch.toLocaleString())} · loss ${b(e.loss == null ? '—' : e.loss.toFixed(4))} · `
-    + `${b(WEATHER_NAME[e.weather] || e.weather)} · layers ${b(e.hidden.join('·') || 'none')} · ${b(e.activation)}<br>`
+    + `${b(WEATHER_NAME[e.weather] || e.weather)} · layers ${b(e.hidden.join('·') || 'none')} · ${b(e.activation)} · `
+    + `${b((LOSS_FNS[e.lossFn] || LOSS_FNS.ce).label)}<br>`
     + `lr ${b(e.lr)} · momentum ${b(e.momentum.toFixed(2))} · batch ${b(e.batch)} · L2 ${b(e.l2)} · `
     + `${b(e.points)} pireps${e.r ? ` · slice ±${b(e.r)}` : ''}`;
 }
@@ -3826,6 +4079,13 @@ function init() {
   $('#activationSel').addEventListener('change', (e) => {
     state.activation = e.target.value;
     buildNet();
+  });
+  // the loss applies live like the optimizer dials — the objective changes,
+  // the weights stay; expect the loss readout to jump to the new scale
+  $('#lossSel').addEventListener('change', (e) => {
+    state.lossFn = e.target.value;
+    markDescentDirty(); // the landscape is loss-over-weights: new terrain
+    requestRender();
   });
   // sliders apply live on drag; trainer swap keeps the learned weights
   const slider = (id, valId, key, steps, fmt) => {

@@ -184,16 +184,6 @@
       color: #141413;
     }
 
-    /* tooltips that must open downward (elements at the very top of the page) */
-    .tip-below::after {
-      bottom: auto;
-      top: calc(100% + 8px);
-      transform: translateY(-3px);
-    }
-    .tip-below:hover::after,
-    .tip-below:focus-visible::after,
-    .tip-below:has(:focus-visible)::after { transform: none; }
-
     /* the two control sets share one grid cell: the cell height is the max of
        both, so switching modes can never change the toolbar's height */
     .toolbar-stack { flex: 1; min-width: 0; display: grid; }
@@ -1030,6 +1020,18 @@
     }
 
     .tip-right::after { left: auto; right: 0; }
+
+    /* tooltips that must open downward (elements at the very top of the page).
+       Must come after the base [data-tip]::after rule: same specificity, and
+       both bottom and top set at once collapse the bubble to an empty chip */
+    .tip-below::after {
+      bottom: auto;
+      top: calc(100% + 8px);
+      transform: translateY(-3px);
+    }
+    .tip-below:hover::after,
+    .tip-below:focus-visible::after,
+    .tip-below:has(:focus-visible)::after { transform: none; }
 
     @media (prefers-reduced-motion: reduce) {
       [data-tip]::after { transition: none; }

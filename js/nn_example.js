@@ -3970,9 +3970,10 @@ const ICON_COMPRESS =
 function initFullscreen() {
   const sync = () => {
     const fs = !!document.fullscreenElement;
-    $('#fsLabel').textContent = fs
-      ? 'full screen — click here (or press esc) to exit'
-      : 'switching to full screen to give the best experience';
+    // once full screen there's nothing left to sell: the banner retires for
+    // good however the switch happened (banner click, top toggle, F11, or the
+    // intro pitch) — the top toggle remains the way back out and in
+    if (fs) $('#fsBar').classList.add('gone');
     const icon = fs ? ICON_COMPRESS : ICON_EXPAND;
     $('#fsIcon').innerHTML = icon;
     $('#fsIconTop').innerHTML = icon;

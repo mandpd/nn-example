@@ -80,12 +80,38 @@ time or rewind it — weights, loss and the epoch counter are restored exactly. 
 starts over from new random values.
 
 **Weather** swaps the pattern behind the PIREPs — front, storm cell, cyclone bands,
-or patternless scattered convection. The **hidden layers** sliders and the
-**activation** menu change the architecture and rebuild the net from scratch. The
-**loss** menu swaps what "wrong" means (see
-[choosing the loss function](#choosing-the-loss-function)),
-and the **learning rate, momentum, batch size and L2** sliders retune the optimizer —
-all live, without touching what has been learned — watch the loss history react.
+patternless scattered convection, or **rare rough** (85 ok / 10 rough reports, the
+class-imbalance setting where weighted cross-entropy and focal loss earn their
+keep). **save csv / load csv** round-trip the reports as plain text — one row per
+PIREP, `x0,x1,y`, with the position in map units (the visible airspace spans
+±5.2) and `y` = 1 for ok, 0 for rough (`ok`/`rough` also accepted; header row
+optional; up to 1000 rows). Export a preset to study or seed your own file, then
+load any distribution the presets can't draw — XORs, checkerboards, real data
+projected to 2-D — and it becomes the weather, with label noise and the
+validation hold-out applying on top just like a preset. **Label noise**
+regenerates the data with 10% or 25% of the grades filed wrong — the scenario
+label smoothing and KL's soft targets are built for. The
+**hidden layers** sliders and the **activation** menu change the architecture and
+rebuild the net from scratch. The **loss** menu swaps what "wrong" means (see
+[choosing the loss function](#choosing-the-loss-function)), the **optimizer** menu
+swaps how the weights step downhill — sgd, nesterov, adagrad, windowgrad, or
+adadelta (momentum only feeds sgd and nesterov, so it greys out under the adaptive
+methods; adadelta ignores the learning rate entirely) — and the **learning rate,
+momentum, batch size and L2** sliders retune the descent — all live, without
+touching what has been learned — watch the timeline's loss trail react.
+
+**Validation · hold out 25%** keeps a random quarter of the PIREPs out of training
+(a fresh draw each time the box is ticked). The held-out
+reports turn **grey** on the airspace map — display-only: they can't be selected,
+tagged or traced — and their loss is the second number in the Loss stat and the
+dashed teal trail on the timeline — the number training never sees. When teal lifts away while violet
+keeps falling, the net is memorizing, not learning. **Miss · false alarm** counts
+the two ways to be wrong over every plotted report: rough air graded ok (the
+dangerous error), and ok air graded rough (costly but safe) — the scoreboard for
+the imbalance-aware losses. **Model save / load** writes the trained weights and
+dials to a JSON file and restores them later, and **⧉ share setup** (top right)
+copies a link that reproduces the whole experiment — weather, architecture, loss,
+optimizer, dials, noise, hold-out — from fresh weights.
 
 Once a run starts, the page title gives way to the epoch timeline, and the dataset
 and architecture controls fade and lock until **Reset weights**. What can still be
@@ -97,7 +123,9 @@ Takes the title's place once a run starts. The gold line is **now**: every panel
 the page is a snapshot of this exact moment in an evolving training process. The
 scale stretches as the epoch count climbs, and "paused" marks a frozen simulation.
 The violet trail unrolling behind the now-line is the **loss** — the average error
-the training is pushing down, drawn against the run's own worst value.
+the training is pushing down, drawn against the run's own worst value. With the
+validation hold-out on, a dashed teal trail rides alongside: the held-out points'
+loss, the run's honest score.
 **+1 / −1 epoch** move the now-line with them — including backwards. While paused
 you can also **drag the now-line** itself: scrub back through the recorded history
 (about the last 200 snapshots) and forward again — every panel follows live, and
@@ -289,10 +317,10 @@ uncertain or comes from another model (distillation).
 
 **Focal loss** · cross-entropy times **(1−P[y])²** (γ = 2). Reports the net
 already gets right are damped toward zero loss, so training spends its effort on
-the hard or rare ones. Made for imbalance — try deleting most of the rough PIREPs
-and compare how plain cross-entropy coasts on the easy ok region while focal keeps
-digging at the stragglers. The trade: it gives up gradient on easy examples it has
-nearly won.
+the hard or rare ones. Made for imbalance — the **rare rough** weather preset is
+its home turf: plain cross-entropy coasts on the easy ok region while focal keeps
+digging at the 10 stragglers, with the miss counter as the scoreboard. The trade:
+it gives up gradient on easy examples it has nearly won.
 
 **Mean squared error** · treat the label as a number and punish (P − truth)².
 Simple and feasible, but usually worse for classification: predicting 0.01 for the
@@ -342,43 +370,63 @@ Training is frozen — this mode asks the net for the ride ahead. The airspace m
 becomes a single **waypoint** on your route: click anywhere to move it, and the
 forecast readout updates instantly with P(ok) and P(rough) from the current
 weights — plus the call a passenger flight would make: **stay on plan**, or
-**divert**. **Run** animates the forward pass — the waypoint's two coordinates
-travel layer by layer through the network diagram until they become the two
-probabilities. Nothing trains, no loss, no gradients: this is the whole life of a
-deployed network.
+**divert**. The **divert threshold** slider is that call's dial: divert whenever
+P(rough) is at or above the line. At 0.50 it is the plain "whichever is larger"
+rule; slide it down and the orange divert region swallows the map (cautious), up
+and only near-certain chop diverts. Training decides what the net believes — this
+slider is policy, what you do about it. **Run** animates the forward pass — the
+waypoint's two coordinates travel layer by layer through the network diagram until
+they become the two probabilities. Nothing trains, no loss, no gradients: this is
+the whole life of a deployed network.
 
 ---
 
-## Explore — experiments to try
+## Explore — guided experiments, as to-do lists
 
-**Watch a boundary being found.** Pick the **storm cell** weather in ATC view, stay
-paused, and hit **Reset weights** a few times. Each reset is a new random starting
-point — the shading shows each net's initial guess. Now train, and watch the loss
-drive the boundary around the clusters. Use **+1 / −1 epoch** to replay any moment
-in slow motion.
+Every exploration in the Explore tab is an ordered **to-do list**. Click any step
+(or walk with the **‹ prev / next ›** buttons under each card) and the control it
+talks about lights up on the main page — the mode and detail tab switch too if the
+step needs them — while the steps behind you get ticked off. The current
+walkthroughs:
 
-**Give the cyclone more capacity.** Switch to the **cyclone**. With two hidden
-layers of 4 neurons the net often can't capture the whole shape — some rain bands
-end up the wrong color. Drag the layer sliders up (try 8 and 8) or add a third
-layer, then train again: the extra neurons give the net more directions to fold
-space, enough to wrap the spiral bands. The filmstrip shows where the extra
-capacity gets used.
+**Watch a boundary being found.** Storm cell, ATC view, a few weight resets to see
+different random starting guesses, then train and replay moments with
+**+1 / −1 epoch**. Training is the loss dragging a random guess into shape.
 
-**Two resets, two valleys.** The loss surface has many minima, and where a net
-lands depends on where it starts. Train on the **storm cell** until the loss
-flattens, open the **loss map (2d)** or **(3d)** tab, and press the **camera** to
-file the settled landscape in the log book. Now **Reset weights** — a new random
-start — train again, and snapshot again. Open the **log book** tab and flip
-between the two entries: same data, same architecture, two different valleys,
-often with visibly different decision boundaries on the airspace map. That's why
+**Give the cyclone more capacity.** Two layers of 4 usually can't wrap the spiral
+bands; more neurons give the net more directions to fold space. The filmstrip
+shows where the extra capacity gets spent.
+
+**Two resets, two valleys.** Train to convergence, snapshot the **loss map (2d)**
+with the camera, reset, train, snapshot again, and flip between the log-book
+entries: same data, same architecture, two different valleys. That's why
 practitioners train with several seeds.
 
-**Change the ingredients.** Train the same data under each **activation** and
-compare filmstrips: relu creases the grid along straight lines, tanh and sigmoid
-bend it smoothly. Then abuse the optimizer: a learning rate 10× higher or lower,
-momentum 0.9, batch size 1 versus 50, heavy L2 decay. The rate sliders and the
-**loss** menu apply live, so the loss history shows each change's effect instantly —
-switch the loss mid-run and watch the same weights get judged by a different ruler.
+**Rare rough · when misses matter.** The imbalanced preset, judged by the
+**miss · false alarm** counter: plain cross-entropy coasts on the easy ok region;
+weighted CE reprices the classes and trades false alarms for fewer misses; focal
+mutes the easy examples so training digs at the 10 hard ones. Which trade would
+you fly with?
+
+**Noisy labels want soft targets.** 25% label noise plus the validation hold-out:
+watch plain cross-entropy dig into the noise while the val curve stalls, then see
+label smoothing keep train and val closer together.
+
+**Overfit, then regularize.** Hold-out on, scattered weather, maximum capacity,
+L2 at 0: violet keeps falling while dashed teal lifts away — that gap is
+overfitting. Raise L2 mid-run and watch the gap close.
+
+**Race the optimizers.** The loss map as a racetrack: sgd's steady steps,
+momentum's overshoot, adadelta ignoring the learning rate, adagrad stalling late
+as its history accumulates.
+
+**Pick the divert line.** Inference mode: park the waypoint near the boundary and
+slide the **divert threshold** — same net, same beliefs, different appetite for
+risk. Find the waypoint where policy, not weather, decides.
+
+**Change the ingredients, keep the receipt.** Activations, learning-rate abuse,
+mid-run loss swaps — then **⧉ share setup** to copy a link that reproduces the
+experiment, and **save net / load net** to keep the trained weights themselves.
 
 **Beyond this demo.** Explore the
 [other convnetjs examples](https://cs.stanford.edu/people/karpathy/convnetjs/) —

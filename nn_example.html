@@ -203,14 +203,13 @@
       display: flex;
       flex-wrap: wrap;
       gap: 14px 22px;
-      align-items: flex-end;
+      /* top-aligned so every header label in a row sits on one line, whatever
+         the height of the control beneath it */
+      align-items: flex-start;
       /* the grid cell stretches all sets to the tallest one's height — pack
          lines to the top so the shorter sets don't sink to the bottom */
       align-content: flex-start;
     }
-
-    /* the tall narration block would otherwise push the buttons down its line */
-    .pass-controls, .infer-controls { align-items: flex-start; }
 
     .toolbar.pass-mode .epoch-controls,
     .toolbar.infer-mode .epoch-controls { visibility: hidden; }
@@ -359,14 +358,13 @@
     .switch { display: inline-flex; align-items: center; gap: 8px; font: 500 12.5px var(--mono); cursor: pointer; padding: 8px 0; }
     .switch input { accent-color: var(--focus); width: 15px; height: 15px; margin: 0; cursor: pointer; }
 
-    .readout { margin-left: auto; display: flex; gap: 22px; align-items: flex-end; }
+    .readout { display: flex; gap: 22px; align-items: flex-end; }
     .stat { display: flex; flex-direction: column; gap: 7px; }
     .stat b {
       font: 600 20px/1 var(--mono);
       font-variant-numeric: tabular-nums;
       color: var(--ink);
     }
-    #sparkCanvas { width: 110px; height: 34px; display: block; }
 
     /* ---------- viz panels ---------- */
     .viz { display: grid; grid-template-columns: 1fr 0.72fr 1fr; gap: 16px; }
@@ -682,7 +680,9 @@
       display: flex;
       align-items: center;
       gap: 6px;
-      margin-top: 7px;
+      /* stand as tall as a button row so the bottom-aligned ctl boxes keep
+         every header label on one line */
+      min-height: 30.5px;
       font: 10px var(--mono);
       letter-spacing: 0.08em;
       text-transform: uppercase;
@@ -910,6 +910,79 @@
     /* the clicked page panel flashes gold in step with its Describe card */
     .hl-panel { border-color: #c98500 !important; box-shadow: 0 0 0 1px #c98500; }
 
+    /* explore tab: each exploration is a walkable to-do list */
+    .exp-card { cursor: default; }
+    .exp-steps {
+      list-style: none;
+      margin: 4px 0 8px;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .exp-steps li {
+      position: relative;
+      padding: 5px 8px 5px 26px;
+      font: 12.5px/1.5 var(--sans);
+      color: var(--ink-sec);
+      border: 1px solid transparent;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .exp-steps li:hover { border-color: rgba(255, 255, 255, 0.22); }
+    .exp-steps li::before {
+      content: '';
+      position: absolute;
+      left: 8px;
+      top: 8px;
+      width: 10px;
+      height: 10px;
+      border: 1.4px solid var(--muted);
+      border-radius: 3px;
+    }
+    .exp-steps li.active {
+      border-color: #c98500;
+      background: rgba(201, 133, 0, 0.08);
+      color: var(--ink);
+    }
+    .exp-steps li.active::before { border-color: #c98500; }
+    .exp-steps li.done { color: var(--muted); }
+    .exp-steps li.done::before {
+      content: '✓';
+      border-color: transparent;
+      color: #63b3a4;
+      font: 700 11px/10px var(--sans);
+      text-align: center;
+    }
+    .exp-nav {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .exp-nav button {
+      font: 11.5px var(--sans);
+      padding: 3px 10px;
+      min-height: 0;
+    }
+    .exp-pos {
+      font: 11px var(--mono, ui-monospace, Menlo, monospace);
+      color: var(--muted);
+      margin-left: auto;
+    }
+    /* the ring an explore step drops on the control it talks about */
+    .exp-hl {
+      outline: 2px solid #c98500;
+      outline-offset: 3px;
+      border-radius: 6px;
+      animation: exp-pulse 1s ease-in-out 3;
+    }
+    @keyframes exp-pulse {
+      50% { outline-color: rgba(201, 133, 0, 0.25); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .exp-hl { animation: none; }
+    }
+
     /* Describe cards are scoped to the mode(s) whose panels they explain;
        cards without data-mode show everywhere */
     #describePane[data-mode="epoch"] .side-card[data-mode]:not([data-mode~="epoch"]),
@@ -1028,6 +1101,8 @@
           </button>
           <button id="replayBtn" type="button" class="replay-btn tip-right tip-below"
             data-tip="Replay the opening title sequence — PIREPs arriving on the map, and the question they pose.">▶ replay video</button>
+          <button id="shareBtn" type="button" class="replay-btn tip-right tip-below"
+            data-tip="Copy a link that reproduces this experiment: weather, architecture, loss, optimizer, dials, noise and hold-out. The weights themselves start fresh — share the setup, train it anywhere.">⧉ share setup</button>
         </div>
       </div>
     </div>
@@ -1055,17 +1130,45 @@
       </div>
 
       <div class="ctl"
-        data-tip="The weather pattern behind the PIREPs. A 'front' is separable by one straight line; a 'storm cell' and 'cyclone' bands can only be mapped by bending the space with hidden layers; 'scattered' convection has no pattern to learn. Locked while a run is active — press Reset weights to change it.">
+        data-tip="The weather pattern behind the PIREPs. A 'front' is separable by one straight line; a 'storm cell' and 'cyclone' bands can only be mapped by bending the space with hidden layers; 'scattered' convection has no pattern to learn; 'rare rough' is the storm cell with only 10 rough reports among 85 ok — the class-imbalance case. Locked while a run is active — press Reset weights to change it.">
         <span class="ctl-label">Weather</span>
         <div class="seg" id="datasetSeg" role="group" aria-label="Weather pattern">
           <button type="button" data-set="simple" aria-pressed="false">front</button>
           <button type="button" data-set="circle" aria-pressed="true">storm cell</button>
           <button type="button" data-set="spiral" aria-pressed="false">cyclone</button>
           <button type="button" data-set="random" aria-pressed="false">scattered</button>
+          <button type="button" data-set="rare" aria-pressed="false"
+            data-tip="The storm cell with the classes wildly imbalanced: ~85 ok reports and only 10 rough ones. The setting where weighted cross-entropy and focal loss earn their keep — watch the misses count.">rare rough</button>
         </div>
+      </div>
+
+      <div class="ctl"
+        data-tip="Replay the PIREPs' radio-call arrival animation — tail number and grade first, then the dot — whenever the weather regenerates.">
+        <span class="ctl-label">Animation</span>
         <label class="anim-check">
-          <input type="checkbox" id="animCheck" checked> show animation
+          <input type="checkbox" id="animCheck" checked> show arrivals
         </label>
+      </div>
+
+      <div class="ctl">
+        <span class="ctl-label">Weather csv</span>
+        <div class="ctl-row">
+          <button id="saveCsvBtn" type="button"
+            data-tip="Download the current PIREPs as a CSV — one row per report: x0,x1,y (position in map units, class 1 = ok, 0 = rough). Edit it, or generate your own distribution, and load it back.">save csv</button>
+          <button id="loadCsvBtn" type="button"
+            data-tip="Load a weather CSV: rows of x0,x1,y with y = 1 (ok) or 0 (rough); ok/rough also accepted, header row optional, up to 1000 rows. The visible airspace spans ±5.2 map units. Becomes the training data immediately — label noise and the hold-out apply on top. Locked while a run is active.">load csv</button>
+          <input type="file" id="csvFileInput" accept=".csv,text/csv,text/plain" hidden>
+        </div>
+      </div>
+
+      <div class="ctl"
+        data-tip="Some fraction of the PIREPs get filed with the wrong grade — pilots are subjective. Regenerates the dataset with that many labels flipped. The scenario label smoothing and KL's soft targets are built for. Locked while a run is active.">
+        <span class="ctl-label">Label noise</span>
+        <div class="seg" id="noiseSeg" role="group" aria-label="Label noise">
+          <button type="button" data-noise="0" aria-pressed="true">none</button>
+          <button type="button" data-noise="0.1" aria-pressed="false">10%</button>
+          <button type="button" data-noise="0.25" aria-pressed="false">25%</button>
+        </div>
       </div>
 
       <div class="ctl"
@@ -1096,6 +1199,18 @@
           <option value="mse">mean squared error</option>
           <option value="hinge">hinge loss</option>
           <option value="sqhinge">squared hinge</option>
+        </select>
+      </div>
+
+      <div class="ctl"
+        data-tip="How the weights step downhill. sgd takes plain gradient steps (plus momentum); nesterov peeks ahead before stepping; adagrad, windowgrad and adadelta adapt each weight's own step size from its gradient history — adadelta needs no learning rate at all. Applies live: same weights, different descent rule. Watch the path on the loss map change.">
+        <span class="ctl-label">Optimizer</span>
+        <select id="optimizerSel" aria-label="Optimizer">
+          <option value="sgd" selected>sgd</option>
+          <option value="nesterov">nesterov</option>
+          <option value="adagrad">adagrad</option>
+          <option value="windowgrad">windowgrad</option>
+          <option value="adadelta">adadelta</option>
         </select>
       </div>
 
@@ -1136,6 +1251,24 @@
       </div>
 
       <div class="ctl"
+        data-tip="Hold a random quarter of the PIREPs out of training as a validation set — a fresh draw each time the box is ticked; they turn grey on the airspace map and can't be selected. Their loss — the dashed teal curve — is the number training never sees: when it rises while the violet training loss keeps falling, the net is memorizing, not learning. Locked while a run is active.">
+        <span class="ctl-label">Validation</span>
+        <label class="anim-check">
+          <input type="checkbox" id="valCheck"> hold out 25%
+        </label>
+      </div>
+
+      <div class="ctl"
+        data-tip="Save the trained weights (plus the dials) to a JSON file, or load one saved earlier — the architecture and settings come back with it. Loading replaces the current net, so it is locked while a run is active.">
+        <span class="ctl-label">Model</span>
+        <div class="ctl-row">
+          <button id="saveNetBtn" type="button">save net</button>
+          <button id="loadNetBtn" type="button">load net</button>
+          <input type="file" id="netFileInput" accept=".json,application/json" hidden>
+        </div>
+      </div>
+
+      <div class="ctl"
         data-tip="PILOT VIEW shows only the reports — all a crew actually has. ATC VIEW overlays the net’s full ride forecast for every position; the decision boundary is where the colors meet.">
         <span class="ctl-label">View</span>
         <div class="seg" id="viewSeg" role="group" aria-label="Map view">
@@ -1146,7 +1279,7 @@
 
       <div class="readout">
         <div class="stat tip-right"
-          data-tip="Average of the selected loss over the training points — how wrong the net's predictions are right now. Near 0 means confident and correct; with the default cross-entropy, about 0.69 means coin-flip guessing.">
+          data-tip="Average of the selected loss over the training points — how wrong the net's predictions are right now. Near 0 means confident and correct; with the default cross-entropy, about 0.69 means coin-flip guessing. With the validation hold-out on, the second number is the held-out points' loss — the one training never sees.">
           <span class="ctl-label">Loss</span>
           <b id="lossVal">—</b>
         </div>
@@ -1155,10 +1288,10 @@
           <span class="ctl-label">Epochs</span>
           <b id="epochVal">0</b>
         </div>
-        <div class="stat tip-right"
-          data-tip="The recent loss curve. Falling: the net is learning. Flat: stuck — try a higher learning rate or more capacity. Spiky: the learning rate is too high.">
-          <span class="ctl-label">Loss history</span>
-          <canvas id="sparkCanvas" width="110" height="34"></canvas>
+        <div class="stat tip-right" id="confStat"
+          data-tip="The two ways to be wrong, counted over every plotted PIREP. Misses: rough air the net currently grades ok — the dangerous error. False alarms: ok air graded rough — costly but safe. Weighted cross-entropy trades one for the other; watch these while you switch losses.">
+          <span class="ctl-label">Miss · false alarm</span>
+          <b id="confVal">— · —</b>
         </div>
       </div>
       </div><!-- /epoch-controls -->
@@ -1218,8 +1351,17 @@
           <div class="infer-readout" id="inferPtVal">(0.00, 0.00)</div>
         </div>
         <div class="ctl">
-          <span class="ctl-label" data-tip="The trained net's softmax output for this waypoint — two probabilities that sum to 1. The larger one makes the call: stay on plan, or divert.">Forecast</span>
+          <span class="ctl-label" data-tip="The trained net's softmax output for this waypoint — two probabilities that sum to 1. Compared against the divert threshold to make the call: stay on plan, or divert.">Forecast</span>
           <div class="infer-readout" id="inferOutVal">—</div>
+        </div>
+        <div class="ctl"
+          data-tip="The same trained net, a different appetite for risk: divert whenever P(rough) is at or above this line. Slide it down and the orange divert region swallows the map — cautious. Slide it up and only near-certain chop diverts. Changing what the net learns is training; changing this is policy.">
+          <span class="ctl-label">Divert threshold</span>
+          <div class="slider-row">
+            <input type="range" id="thrSlider" min="0.05" max="0.95" step="0.05" value="0.5"
+              aria-label="Divert threshold on P(rough)">
+            <b class="slider-val" id="thrVal">0.50</b>
+          </div>
         </div>
         <div class="ctl" data-tip="PILOT VIEW shows only the reports — all a crew actually has. ATC VIEW overlays the net’s full ride forecast for every position; the decision boundary is where the colors meet.">
           <span class="ctl-label">View</span>
@@ -1633,9 +1775,11 @@
           <p>
             <b>Focal loss</b> · cross-entropy times <b>(1−P[y])²</b> (γ&nbsp;=&nbsp;2). Reports
             the net already gets right are damped toward zero loss, so training spends its effort
-            on the hard or rare ones. Made for imbalance — try deleting most of the rough PIREPs
-            and compare how plain CE coasts on the easy ok region while focal keeps digging at the
-            stragglers. The trade: it gives up gradient on easy examples it has nearly won.
+            on the hard or rare ones. Made for imbalance — the <b>rare rough</b> weather preset is
+            its home turf: plain CE coasts on the easy ok region while focal keeps digging at the
+            10 stragglers. The trade: it gives up gradient on easy examples it has nearly won. The
+            Explore tab's <i>rare rough</i> walkthrough races it against weighted CE with the
+            miss counter as the scoreboard; <i>noisy labels</i> does the same for smoothing.
           </p>
           <p>
             <b>Mean squared error</b> · treat the label as a number and punish
@@ -1695,10 +1839,14 @@
             Training is frozen — this mode asks the net for the ride ahead. The airspace map
             becomes a single <b>waypoint</b> on your route: click anywhere to move it, and the
             forecast readout updates instantly with P(ok) and P(rough) from the current weights —
-            plus the call a passenger flight would make: <b>stay on plan</b>, or <b>divert</b>
-            (moderate chop or worse). In <b>ATC view</b>, the background shows the verdict for
-            every possible waypoint at once — divert by picking a corridor through the blue.
-            <b>Pilot view</b> hides the forecast: just you and the reports.
+            plus the call a passenger flight would make: <b>stay on plan</b>, or <b>divert</b>.
+            The <b>divert threshold</b> slider is that call's dial: divert whenever P(rough) is at
+            or above the line. At 0.50 it is the plain "whichever is larger" rule; slide it down
+            and the orange divert region swallows the map (cautious), up and only near-certain
+            chop diverts. Training decides what the net believes — this slider is policy, what
+            you do about it. In <b>ATC view</b>, the background shows the verdict for every possible
+            waypoint at once — divert by picking a corridor through the blue. <b>Pilot view</b>
+            hides the forecast: just you and the reports.
           </p>
           <p>
             <b>Run</b> animates the forward pass — the waypoint's two coordinates travel layer by
@@ -1715,7 +1863,10 @@
             the page is a snapshot of this exact moment in an evolving training process. The scale
             stretches as the epoch count climbs, and “paused” marks a frozen simulation.
             The violet trail unrolling behind the now-line is the <b>loss</b> — the average error
-            the training is pushing down, drawn against the run’s own worst value.
+            the training is pushing down, drawn against the run’s own worst value. With the
+            validation hold-out on, a <b>dashed teal trail</b> rides alongside: the held-out
+            points' loss. When teal lifts away while violet keeps falling, the net is memorizing,
+            not learning.
             <b>+1 / −1 epoch</b> move the now-line with them — including backwards. While paused
             you can also <b>drag the now-line</b> itself: scrub back through the recorded history
             (about the last 200 snapshots) and forward again — every panel follows live, and
@@ -1737,12 +1888,31 @@
           </p>
           <p>
             <b>Weather</b> swaps the pattern behind the PIREPs — front, storm cell, cyclone
-            bands, or patternless scattered convection. The <b>hidden layers</b> sliders and the
-            <b>activation</b> menu change the architecture and rebuild the net from scratch.
+            bands, patternless scattered convection, or <b>rare rough</b> (85 ok / 10 rough — the
+            class-imbalance setting). <b>save csv / load csv</b> round-trip the reports as plain
+            <i>x0,x1,y</i> rows (1&nbsp;=&nbsp;ok, 0&nbsp;=&nbsp;rough, map units ±5.2) — export a
+            preset to study, or hand-craft any distribution the presets can't draw and load it as
+            the weather. <b>Label noise</b> regenerates the data with 10% or 25% of
+            the grades filed wrong. The <b>hidden layers</b> sliders and the <b>activation</b>
+            menu change the architecture and rebuild the net from scratch.
             The <b>loss</b> menu swaps what "wrong" means (see the <i>choosing the loss
-            function</i> card), and the <b>learning rate, momentum, batch size and L2</b> sliders
-            retune the optimizer — all live, without touching what has been learned — watch the
-            loss history react.
+            function</i> card), the <b>optimizer</b> menu swaps how the weights step downhill
+            (momentum only feeds sgd and nesterov — it greys out under the adaptive methods), and
+            the <b>learning rate, momentum, batch size and L2</b> sliders retune the descent —
+            all live, without touching what has been learned — watch the timeline's loss trail
+            react.
+          </p>
+          <p>
+            <b>Validation · hold out 25%</b> keeps a random quarter of the PIREPs out of training
+            (a fresh draw each time the box is ticked) — the held-out
+            reports turn <b>grey</b> on the airspace map (display-only: they can't be selected,
+            tagged or traced), and their loss is the second number in the Loss stat and the
+            dashed teal trail on the timeline — the number training never sees.
+            <b>Miss · false alarm</b> counts the two ways to be wrong
+            over every plotted report: rough air graded ok (dangerous), and ok air graded rough
+            (costly but safe). <b>Model save / load</b> writes the trained weights and dials to a
+            JSON file and restores them later, and <b>⧉ share setup</b> (top right) copies a link
+            that reproduces the whole experiment from fresh weights.
           </p>
           <p>
             Once a run starts, the page title gives way to an <b>epoch timeline</b> — the gold
@@ -1900,54 +2070,226 @@
 
       <div class="side-body" id="explorePane" role="tabpanel" hidden>
         <p class="side-intro">
-          Experiments that show off how the net actually behaves.
+          Directed experiments, each a to-do list. <b>Click any step</b> (or walk with
+          prev / next) and the control it talks about lights up on the page — steps behind
+          you get ticked off.
         </p>
 
-        <section class="side-card">
+        <section class="side-card exp-card" id="exp-boundary">
           <h3>Watch a boundary being found</h3>
-          <p>
-            Pick the <b>storm cell</b> weather in ATC view, stay paused, and hit
-            <b>Reset weights</b> a few times. Each reset is a new random starting point — the shading
-            shows each net's initial guess. Now train, and watch the loss drive the boundary around
-            the clusters. Use <b>+1 / −1 epoch</b> to replay any moment in slow motion.
-          </p>
+          <p>Every reset is a different random starting guess; training is the loss dragging
+            that guess into shape.</p>
+          <ol class="exp-steps">
+            <li data-target="#datasetSeg">Pick the <b>storm cell</b> weather.</li>
+            <li data-target="#viewSeg">Make sure <b>atc view</b> is on — the shading is the
+              net's current forecast everywhere.</li>
+            <li data-target="#resetBtn">Hit <b>Reset weights</b> a few times, watching the map:
+              each reset is a new random initial guess.</li>
+            <li data-target="#playBtn">Press <b>Train</b> and watch the loss drive the boundary
+              around the clusters.</li>
+            <li data-target="#stepBtn">Pause, then replay any moment in slow motion with
+              <b>+1 / −1 epoch</b> — or drag the timeline's now-line itself.</li>
+          </ol>
+          <div class="exp-nav">
+            <button type="button" class="exp-prev">‹ prev</button>
+            <button type="button" class="exp-next">next ›</button>
+            <span class="exp-pos"></span>
+          </div>
         </section>
 
-        <section class="side-card">
+        <section class="side-card exp-card" id="exp-capacity">
           <h3>Give the cyclone more capacity</h3>
-          <p>
-            Switch to the <b>cyclone</b>. With two hidden layers of 4 neurons the net often can't
-            capture the whole shape — some rain bands end up the wrong color. Drag the layer sliders
-            up (try 8 and 8) or add a third layer, then train again: the extra neurons give the net
-            more directions to fold space, enough to wrap the spiral bands. The filmstrip shows
-            where the extra capacity gets used.
-          </p>
+          <p>Capacity is how many directions the net has to fold space.</p>
+          <ol class="exp-steps">
+            <li data-target="#datasetSeg">Switch the weather to the <b>cyclone</b>.</li>
+            <li data-target="#playBtn">Train with the default two layers of 4. Some rain bands
+              usually end up the wrong color — the net runs out of folds.</li>
+            <li data-target="#layerChips">Drag the layer sliders up (try 8 and 8), or
+              <b>+ layer</b> a third. The net rebuilds from fresh weights.</li>
+            <li data-target="#playBtn">Train again — the extra neurons wrap the spiral bands.</li>
+            <li data-target="#panelPipeline">Read the filmstrip to see where the extra capacity
+              gets spent bending space.</li>
+          </ol>
+          <div class="exp-nav">
+            <button type="button" class="exp-prev">‹ prev</button>
+            <button type="button" class="exp-next">next ›</button>
+            <span class="exp-pos"></span>
+          </div>
         </section>
 
-        <section class="side-card">
+        <section class="side-card exp-card" id="exp-valleys">
           <h3>Two resets, two valleys</h3>
-          <p>
-            The loss surface has many minima, and where a net lands depends on where it starts.
-            Train on the <b>storm cell</b> until the loss flattens, open the
-            <b>loss map (2d)</b> or <b>(3d)</b> tab, and press the <b>camera</b> to file the
-            settled landscape in the log book. Now <b>Reset weights</b> — a new random start —
-            train again, and snapshot again. Open the <b>log book</b> tab and flip between the
-            two entries: same data, same architecture, two different valleys, often with visibly
-            different decision boundaries on the airspace map. That's why practitioners train
-            with several seeds.
-          </p>
+          <p>The loss surface has many minima; where a net lands depends on where it starts.
+            That's why practitioners train several seeds.</p>
+          <ol class="exp-steps">
+            <li data-target="#datasetSeg">Pick the <b>storm cell</b> and train until the loss
+              flattens.</li>
+            <li data-tab="#detTabDescent" data-target="#panelDetail">Open the
+              <b>loss map (2d)</b> tab — the valley the run settled into.</li>
+            <li data-tab="#detTabDescent" data-target="#snapBtn">Press the <b>camera</b> to file
+              the settled landscape in the log book.</li>
+            <li data-target="#resetBtn"><b>Reset weights</b> — a new random start.</li>
+            <li data-target="#playBtn">Train again to convergence, and snapshot again.</li>
+            <li data-tab="#detTabLogbook" data-target="#panelDetail">Open the <b>log book</b> and
+              flip between the entries: same data, same architecture, two different valleys —
+              often visibly different boundaries.</li>
+          </ol>
+          <div class="exp-nav">
+            <button type="button" class="exp-prev">‹ prev</button>
+            <button type="button" class="exp-next">next ›</button>
+            <span class="exp-pos"></span>
+          </div>
         </section>
 
-        <section class="side-card">
-          <h3>Change the ingredients</h3>
-          <p>
-            Train the same data under each <b>activation</b> and compare filmstrips: relu creases the
-            grid along straight lines, tanh and sigmoid bend it smoothly. Then abuse the optimizer:
-            a learning rate 10× higher or lower, momentum 0.9, batch size 1 versus 50, heavy L2 decay.
-            The rate sliders and the <b>loss</b> menu apply live, so the loss history shows each
-            change's effect instantly — switch the loss mid-run and watch the same weights get
-            judged by a different ruler.
-          </p>
+        <section class="side-card exp-card" id="exp-rare">
+          <h3>Rare rough · when misses matter</h3>
+          <p>With 85 ok reports and 10 rough ones, a lazy net scores well by predicting ok
+            everywhere. The losses built for imbalance refuse to let it.</p>
+          <ol class="exp-steps">
+            <li data-target="#datasetSeg">Pick the <b>rare rough</b> weather.</li>
+            <li data-target="#confVal">Watch the <b>miss</b> count — rough air graded ok, the
+              dangerous error — as you work through the next steps.</li>
+            <li data-target="#playBtn">Train with plain <b>cross-entropy</b>. Early on it often
+              coasts: good loss, blue map, misses stuck high.</li>
+            <li data-target="#lossSel">Switch the loss to <b>weighted cross-entropy</b> — a missed
+              rough report now costs 2.5× a false alarm.</li>
+            <li data-target="#resetBtn"><b>Reset weights</b> and train again: the boundary gets
+              pushed into blue territory, trading false alarms for fewer misses.</li>
+            <li data-target="#lossSel">Now try <b>focal loss</b>: instead of repricing classes it
+              mutes the easy examples, so training digs at the 10 hard ones.</li>
+            <li data-target="#confVal">Compare the final <b>miss · false alarm</b> pairs across
+              the three losses. Which trade would you fly with?</li>
+          </ol>
+          <div class="exp-nav">
+            <button type="button" class="exp-prev">‹ prev</button>
+            <button type="button" class="exp-next">next ›</button>
+            <span class="exp-pos"></span>
+          </div>
+        </section>
+
+        <section class="side-card exp-card" id="exp-noise">
+          <h3>Noisy labels want soft targets</h3>
+          <p>Some PIREPs are simply filed wrong. Hard 1/0 targets tell the net to be infinitely
+            sure of them anyway; smoothing says don't.</p>
+          <ol class="exp-steps">
+            <li data-target="#noiseSeg">Set <b>label noise</b> to 25% — the dataset regenerates
+              with a quarter of the grades flipped.</li>
+            <li data-target="#valCheck">Turn on the <b>validation</b> hold-out so you can see
+              generalization, not just fit.</li>
+            <li data-target="#playBtn">Train with plain <b>cross-entropy</b> well past
+              convergence — watch the dashed teal val curve stop falling while violet keeps
+              digging into the noise.</li>
+            <li data-target="#lossSel">Switch to <b>label-smoothed CE</b> (targets 0.95/0.05).</li>
+            <li data-target="#resetBtn"><b>Reset weights</b>, train the same length, and compare
+              the val curve and the boundary — smoother, less contorted around mislabeled dots.</li>
+            <li data-target="#timeline">The timeline's trails tell the story in one glance:
+              smoothing keeps violet (train) and dashed teal (val) closer together.</li>
+          </ol>
+          <div class="exp-nav">
+            <button type="button" class="exp-prev">‹ prev</button>
+            <button type="button" class="exp-next">next ›</button>
+            <span class="exp-pos"></span>
+          </div>
+        </section>
+
+        <section class="side-card exp-card" id="exp-overfit">
+          <h3>Overfit, then regularize</h3>
+          <p>Memorizing the training reports is not the same as learning the weather. The held-out
+            curve is the difference, drawn.</p>
+          <ol class="exp-steps">
+            <li data-target="#valCheck">Turn on the <b>validation</b> hold-out — a random quarter
+              of the PIREPs (the grey dots) sits out of training.</li>
+            <li data-target="#datasetSeg">Pick <b>scattered</b> weather: patternless convection,
+              nothing real to learn.</li>
+            <li data-target="#layerChips">Max out capacity — four layers, 8 neurons each.</li>
+            <li data-target="#l2Slider">Drop <b>L2 decay</b> to 0: no penalty for contortion.</li>
+            <li data-target="#playBtn">Train long. Violet (train) keeps falling; dashed teal (val)
+              bottoms out and lifts away — that gap is overfitting.</li>
+            <li data-target="#l2Slider">Raise <b>L2</b> to 0.01 mid-run and watch the gap close:
+              the penalty smooths the boundary back out.</li>
+            <li data-target="#datasetSeg">Repeat on the <b>storm cell</b>: with real structure,
+              val follows train much further before they part.</li>
+          </ol>
+          <div class="exp-nav">
+            <button type="button" class="exp-prev">‹ prev</button>
+            <button type="button" class="exp-next">next ›</button>
+            <span class="exp-pos"></span>
+          </div>
+        </section>
+
+        <section class="side-card exp-card" id="exp-optimizers">
+          <h3>Race the optimizers</h3>
+          <p>Same landscape, different descent rules — the loss map shows each one's gait.</p>
+          <ol class="exp-steps">
+            <li data-tab="#detTabDescent" data-target="#panelDetail">Open the <b>loss map (2d)</b>
+              tab and keep it in view.</li>
+            <li data-target="#playBtn">Train the storm cell with plain <b>sgd</b> — steady steps
+              down the slope.</li>
+            <li data-target="#momentumSlider">Push <b>momentum</b> to 0.9 and watch the path
+              overshoot and swing through the valley.</li>
+            <li data-target="#optimizerSel">Switch the optimizer to <b>adadelta</b> — it ignores
+              the learning rate entirely, adapting each weight's own step size.</li>
+            <li data-target="#optimizerSel">Try <b>adagrad</b> late in a long run: its
+              accumulated history shrinks the steps until progress stalls — the flaw windowgrad's
+              moving window fixes.</li>
+            <li data-target="#resetBtn">Reset between contestants for a fair race — the
+              timeline's loss trail is the finish-line photo.</li>
+          </ol>
+          <div class="exp-nav">
+            <button type="button" class="exp-prev">‹ prev</button>
+            <button type="button" class="exp-next">next ›</button>
+            <span class="exp-pos"></span>
+          </div>
+        </section>
+
+        <section class="side-card exp-card" id="exp-threshold">
+          <h3>Pick the divert line</h3>
+          <p>Training decides what the net believes; the threshold decides what you do about it.
+            This one runs in inference mode.</p>
+          <ol class="exp-steps">
+            <li data-target="#playBtn">Train the storm cell until the boundary looks right, then
+              pause.</li>
+            <li data-mode="infer" data-target="#panelFeature">Switch to <b>inference</b> — the map
+              becomes a single waypoint on your route. Click near the color boundary.</li>
+            <li data-mode="infer" data-target="#inferOutVal">Read the forecast: P(ok), P(rough),
+              and the call.</li>
+            <li data-mode="infer" data-target="#thrSlider">Slide the <b>divert threshold</b> down
+              to 0.2: divert on a 20% chance of chop. The orange region swallows the map —
+              a cautious airline.</li>
+            <li data-mode="infer" data-target="#thrSlider">Slide it up to 0.8: only near-certain
+              chop diverts. Same net, same beliefs — different appetite for risk.</li>
+            <li data-mode="infer" data-target="#inferOutVal">Find a waypoint whose call flips as
+              you move the slider. That point is where policy, not weather, decides.</li>
+          </ol>
+          <div class="exp-nav">
+            <button type="button" class="exp-prev">‹ prev</button>
+            <button type="button" class="exp-next">next ›</button>
+            <span class="exp-pos"></span>
+          </div>
+        </section>
+
+        <section class="side-card exp-card" id="exp-share">
+          <h3>Change the ingredients, keep the receipt</h3>
+          <p>Every dial applies live; a link or a file preserves what you found.</p>
+          <ol class="exp-steps">
+            <li data-target="#activationSel">Train the same data under each <b>activation</b> and
+              compare filmstrips: relu creases space along straight lines; tanh and sigmoid bend
+              it smoothly.</li>
+            <li data-target="#lrSlider">Abuse the <b>learning rate</b>: 10× higher (spikes), 10×
+              lower (crawl). The timeline's loss trail reacts instantly.</li>
+            <li data-target="#lossSel">Switch the <b>loss</b> mid-run and watch the same weights
+              get judged by a different ruler.</li>
+            <li data-target="#shareBtn">Found a setup worth keeping? <b>⧉ share setup</b> copies a
+              link that reproduces the whole experiment — weather, architecture, loss, optimizer,
+              dials.</li>
+            <li data-target="#saveNetBtn">And <b>save net</b> keeps the trained weights
+              themselves — <b>load net</b> brings the model back, dials and all.</li>
+          </ol>
+          <div class="exp-nav">
+            <button type="button" class="exp-prev">‹ prev</button>
+            <button type="button" class="exp-next">next ›</button>
+            <span class="exp-pos"></span>
+          </div>
         </section>
 
         <section class="side-card">

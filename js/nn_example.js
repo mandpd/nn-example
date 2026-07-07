@@ -25,6 +25,7 @@ const C = {
   mesh    : 'rgba(255, 255, 255, 0.34)',
   meshMini: 'rgba(255, 255, 255, 0.26)',
   spark   : '#9085e9',
+  spark2  : '#63b3a4',   // validation loss (drawn dashed as well, for CVD safety)
 };
 
 const DOG = 1, CAT = 0;
@@ -39,7 +40,11 @@ const state = {
   hidden: [4, 4],          // neurons per hidden layer
   activation: 'relu',
   lossFn: 'ce',            // key into LOSS_FNS — what "wrong" means
+  optimizer: 'sgd',        // convnetjs Trainer method
   lr: 0.003, momentum: 0.1, batch: 10, l2: 0.001,
+  noise: 0,                // fraction of labels flipped at dataset generation
+  holdout: false,          // reserve every 4th point for validation
+  threshold: 0.5,          // inference: divert when P(rough) ≥ this
   dataset: 'circle',
   overlay: true,           // shade prediction regions
   playing: false,
@@ -49,10 +54,13 @@ const state = {
   view: { kind: 'layer' }, // inspector mode: layer | node {rowIdx,j} | edge {rowIdx,i,j}
   epoch: 0, loss: null, lossHist: [],
   lossCurve: [],           // {e, v} samples for the timeline's loss trail
+  valLoss: null, valHist: [], valCurve: [], // held-out points, same shapes
 };
 
 let net = null, trainer = null;
 let data = [], labels = [], tagged = [];
+let valMask = [];          // true = held out for validation, never trained on
+let customWeather = [];    // [x0, x1, y] rows of the last imported weather CSV
 let selectedPt = -1;       // data point whose action bar is open
 let field = null;          // last computed forward-pass field
 let needsRender = true;
@@ -324,12 +332,52 @@ const DATASETS = {
       labels.push(convnetjs.randf(0, 1) > 0.5 ? DOG : CAT);
     }
   },
+  // an imported CSV: the file's rows, stashed verbatim so noise re-applies
+  // from the originals on every regeneration just like the presets
+  custom() {
+    for (const [x, y, l] of customWeather) { data.push([x, y]); labels.push(l); }
+  },
+  // the storm cell's shape with the classes wildly imbalanced: plenty of ok
+  // rides, only a handful of rough reports on the ring — the setting where
+  // weighted cross-entropy and focal loss earn their keep
+  rare() {
+    for (let i = 0; i < 85; i++) {
+      const r = convnetjs.randf(0.0, 2.2), t = convnetjs.randf(0, 2 * Math.PI);
+      data.push([r * Math.sin(t), r * Math.cos(t)]); labels.push(DOG);
+    }
+    for (let i = 0; i < 10; i++) {
+      const r = convnetjs.randf(3.2, 4.8), t = 2 * Math.PI * i / 10 + convnetjs.randf(-0.2, 0.2);
+      data.push([r * Math.sin(t), r * Math.cos(t)]); labels.push(CAT);
+    }
+  },
 };
+
+/* a random quarter of the reports sits out of training as the validation
+   set — re-drawn every time the box is ticked and on every dataset regen,
+   so two hold-outs are two different exams. The draw is fixed for the whole
+   run (the checkbox locks while a run is active), so rewinds stay exact. */
+function rebuildValMask() {
+  valMask = data.map(() => false);
+  if (!state.holdout || !data.length) return;
+  const idx = data.map((_, i) => i);
+  for (let i = idx.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [idx[i], idx[j]] = [idx[j], idx[i]];
+  }
+  const n = Math.max(1, Math.round(data.length * 0.25));
+  for (let k = 0; k < n; k++) valMask[idx[k]] = true;
+}
 
 function setData(name, animate) {
   state.dataset = name;
   data = []; labels = [];
   DATASETS[name]();
+  // label noise: some fraction of the reports are simply filed wrong — the
+  // scenario label smoothing and KL's soft targets are built for
+  if (state.noise > 0) {
+    labels = labels.map((l) => (convnetjs.randf(0, 1) < state.noise ? 1 - l : l));
+  }
+  rebuildValMask();
   tagged = data.map(() => false);
   selectPoint(-1);
   clearPass();
@@ -337,6 +385,7 @@ function setData(name, animate) {
   clearHistory();
   endTimelinePreview(); // a fresh dataset is a reset: the title returns
   state.epoch = 0; state.loss = null; state.lossHist = []; state.lossCurve = [];
+  state.valLoss = null; state.valHist = []; state.valCurve = [];
   document.querySelectorAll('#datasetSeg button').forEach((b) => {
     b.setAttribute('aria-pressed', String(b.dataset.set === name));
   });
@@ -361,6 +410,7 @@ function buildNet() {
   endTimelinePreview();
   clearHistory();
   state.epoch = 0; state.loss = null; state.lossHist = []; state.lossCurve = [];
+  state.valLoss = null; state.valHist = []; state.valCurve = [];
   state.lix = net.layers.length - 1; // fresh net: start on the final output
   state.view = { kind: 'layer' }; // node/edge references die with the old net
   state.d0 = 0;
@@ -387,11 +437,21 @@ function patchLossHead() {
   };
 }
 
-function buildTrainer() {
-  trainer = new convnetjs.Trainer(net, {
+/* the options every Trainer in the app shares — the main one and the
+   batch-size-1 temporaries pass mode spins up */
+function trainerOpts(batchSize) {
+  return {
+    method: state.optimizer,
     learning_rate: state.lr, momentum: state.momentum,
-    batch_size: state.batch, l2_decay: state.l2,
-  });
+    batch_size: batchSize, l2_decay: state.l2,
+    ro: 0.95, eps: 1e-6,
+  };
+}
+
+const usesMomentum = () => state.optimizer === 'sgd' || state.optimizer === 'nesterov';
+
+function buildTrainer() {
+  trainer = new convnetjs.Trainer(net, trainerOpts(state.batch));
 }
 
 /* --- run state: title/description vs epoch timeline, and control locking --- */
@@ -447,8 +507,17 @@ function applyRunLocks() {
   const frozen = runActive && !state.playing;
   ['lrSlider', 'momentumSlider', 'batchSlider', 'l2Slider']
     .forEach((id) => { $('#' + id).disabled = frozen; });
-  // the loss is an optimizer dial too: retune live, but not on a frozen snapshot
+  // loss and optimizer are dials too: retune live, but not on a frozen snapshot
   $('#lossSel').disabled = frozen;
+  $('#optimizerSel').disabled = frozen;
+  // momentum only feeds sgd and nesterov — grey it out under the others
+  $('#momentumSlider').disabled = frozen || !usesMomentum();
+  // what the data IS (noise, hold-out) and wholesale weight replacement are
+  // dataset-grade choices: locked for the whole run
+  document.querySelectorAll('#noiseSeg button').forEach((b) => { b.disabled = runActive; });
+  $('#valCheck').disabled = runActive;
+  $('#loadNetBtn').disabled = runActive;
+  $('#loadCsvBtn').disabled = runActive; // new weather mid-run = new experiment
 }
 
 function timelineCeiling(e) {
@@ -512,13 +581,16 @@ function drawTimeline() {
   // y is normalized to the run's own worst loss, so the shape reads as
   // "how far it has fallen" no matter the dataset
   const curve = state.lossCurve;
+  const vcurve = state.valCurve;
   // the y-scale (and the ghost) always come from the full run, so scrubbing
   // back doesn't rescale the trail under the pointer
   const refCurve = scrub ? scrub.tip.curve : curve;
+  const refVCurve = scrub ? (scrub.tip.vcurve || []) : vcurve;
   if (refCurve.length > 1) {
     const top = 26, bot = baseY - 8;
     let vmax = 0;
     for (const p of refCurve) if (p.v > vmax) vmax = p.v;
+    for (const p of refVCurve) if (p.v > vmax) vmax = p.v;
     if (vmax > 0 && bot > top) {
       const yOf = (v) => bot - (v / vmax) * (bot - top);
       const trace = (c) => {
@@ -543,6 +615,16 @@ function drawTimeline() {
         ctx.lineTo(gx, 14);
         ctx.stroke();
         ctx.restore();
+      }
+      if (vcurve.length > 1) {
+        // the held-out loss rides alongside, dashed teal: the number training
+        // never sees — when it lifts away from the violet trail, that gap is
+        // overfitting, drawn
+        ctx.strokeStyle = C.spark2;
+        ctx.lineWidth = 1.3;
+        ctx.setLineDash([4, 3]);
+        trace(vcurve);
+        ctx.setLineDash([]);
       }
       if (curve.length > 1) {
         ctx.strokeStyle = C.spark;
@@ -584,6 +666,14 @@ function drawTimeline() {
     let lx2 = xNow + 9;
     if (lx2 + lw > w - 6) lx2 = xNow - 9 - lw;
     ctx.fillText(ll, lx2, 34);
+    if (state.valLoss != null) {
+      ctx.fillStyle = C.spark2;
+      const vl = `val ${state.valLoss.toFixed(3)}`;
+      const vw = ctx.measureText(vl).width;
+      let lx3 = xNow + 9;
+      if (lx3 + vw > w - 6) lx3 = xNow - 9 - vw;
+      ctx.fillText(vl, lx3, 48);
+    }
   }
 }
 
@@ -611,6 +701,9 @@ function initTimelineScrub() {
     state.loss = s.loss;
     state.lossHist = s.hist;
     state.lossCurve = s.curve;
+    state.valLoss = s.vloss ?? null;
+    state.valHist = s.vhist || [];
+    state.valCurve = s.vcurve || [];
     requestRender();
   };
 
@@ -623,6 +716,7 @@ function initTimelineScrub() {
       tip: {
         epoch: state.epoch, loss: state.loss,
         hist: state.lossHist.slice(), curve: state.lossCurve.slice(),
+        vloss: state.valLoss, vhist: state.valHist.slice(), vcurve: state.valCurve.slice(),
         weights: weightsSnapshot(),
       },
       k: null, moved: false,
@@ -715,6 +809,7 @@ function snapshot() {
   history.push({
     epoch: state.epoch, loss: state.loss,
     hist: state.lossHist.slice(), curve: state.lossCurve.slice(),
+    vloss: state.valLoss, vhist: state.valHist.slice(), vcurve: state.valCurve.slice(),
     weights: weightsSnapshot(),
   });
   if (history.length > HISTORY_CAP) history.shift();
@@ -733,14 +828,45 @@ function clearHistory() {
 
 function trainEpochs(n) {
   const v = new convnetjs.Vol(1, 1, 2);
-  let avloss = 0;
+  let avloss = 0, cnt = 0;
   for (let e = 0; e < n; e++) {
     for (let i = 0; i < data.length; i++) {
+      if (valMask[i]) continue; // held-out points never train
       v.w[0] = data[i][0]; v.w[1] = data[i][1];
       avloss += trainer.train(v, labels[i]).loss;
+      cnt++;
     }
   }
-  return avloss / (n * data.length);
+  return cnt ? avloss / cnt : 0;
+}
+
+/* average loss over the held-out points with the current weights — forward
+   passes only, nothing trains */
+function evalValLoss() {
+  const fn = lossFn();
+  const zLayer = net.layers[net.layers.length - 2];
+  const v = new convnetjs.Vol(1, 1, 2);
+  let sum = 0, cnt = 0;
+  for (let i = 0; i < data.length; i++) {
+    if (!valMask[i]) continue;
+    v.w[0] = data[i][0]; v.w[1] = data[i][1];
+    const P = net.forward(v, false).w;
+    sum += fn.value(P, zLayer.out_act.w, labels[i]);
+    cnt++;
+  }
+  return cnt ? sum / cnt : null;
+}
+
+// keep the trail bounded: decimate instead of shifting, keeping full-run coverage
+function pushCurve(curve, e, v) {
+  curve.push({ e, v });
+  if (curve.length > 600) {
+    const last = curve[curve.length - 1];
+    const out = curve.filter((_, i) => i % 2 === 0);
+    if (out[out.length - 1] !== last) out.push(last);
+    return out;
+  }
+  return curve;
 }
 
 function recordLoss(avloss, n) {
@@ -748,14 +874,15 @@ function recordLoss(avloss, n) {
   state.lossHist.push(avloss);
   if (state.lossHist.length > 240) state.lossHist.shift();
   state.epoch += n;
-  // the timeline's loss trail spans the whole run, so it can't shift out old
-  // values the way lossHist does — decimate instead, keeping full-run coverage
   markDescentDirty(); // weights moved: the landscape needs a re-survey
-  state.lossCurve.push({ e: state.epoch, v: avloss });
-  if (state.lossCurve.length > 600) {
-    const last = state.lossCurve[state.lossCurve.length - 1];
-    state.lossCurve = state.lossCurve.filter((_, i) => i % 2 === 0);
-    if (state.lossCurve[state.lossCurve.length - 1] !== last) state.lossCurve.push(last);
+  // the timeline's loss trail spans the whole run, so it can't shift out old
+  // values the way lossHist does — pushCurve decimates instead
+  state.lossCurve = pushCurve(state.lossCurve, state.epoch, avloss);
+  state.valLoss = evalValLoss();
+  if (state.valLoss != null) {
+    state.valHist.push(state.valLoss);
+    if (state.valHist.length > 240) state.valHist.shift();
+    state.valCurve = pushCurve(state.valCurve, state.epoch, state.valLoss);
   }
 }
 
@@ -784,6 +911,9 @@ function stepBack() {
   state.loss = s.loss;
   state.lossHist = s.hist;
   state.lossCurve = s.curve;
+  state.valLoss = s.vloss ?? null;
+  state.valHist = s.vhist || [];
+  state.valCurve = s.vcurve || [];
   setUndoDisabled(!history.length);
   markDescentDirty();
   requestRender();
@@ -816,8 +946,9 @@ function setMode(m) {
   if (m === 'infer' && (detailTab === 'descent' || detailTab === 'descent3d')) detailTab = 'layer';
   detailApplyTab();
   $('#describePane').dataset.mode = m; // Describe cards follow the visible panels
-  // the side panel follows the mode: inference opens the decision guide
-  $(m === 'infer' ? '#tabDecide' : '#tabIntro').click();
+  // the side panel follows the mode: inference opens the decision guide —
+  // unless an explore walkthrough is engaged, which owns the side panel
+  if (!exploreGuiding) $(m === 'infer' ? '#tabDecide' : '#tabIntro').click();
   updateHeaderSwap();
   clearPass(); // any running animation dies with the mode that owned it
   if (m === 'pass') {
@@ -902,10 +1033,7 @@ function startPass(paused, atEnd) {
 
   // one real training pass, batch size forced to 1 so the update lands immediately
   const pre = weightsSnapshot();
-  const tmp = new convnetjs.Trainer(net, {
-    learning_rate: state.lr, momentum: state.momentum,
-    batch_size: 1, l2_decay: state.l2,
-  });
+  const tmp = new convnetjs.Trainer(net, trainerOpts(1));
   const v = new convnetjs.Vol(1, 1, 2);
   v.w[0] = data[p][0];
   v.w[1] = data[p][1];
@@ -981,18 +1109,16 @@ function advancePass() {
    with the same batch-size-1 stepping the animated pass used), advance the
    epoch counter and loss history, and start the next epoch's animated pass */
 function rollPassEpoch(paused) {
-  const tmp = new convnetjs.Trainer(net, {
-    learning_rate: state.lr, momentum: state.momentum,
-    batch_size: 1, l2_decay: state.l2,
-  });
+  const tmp = new convnetjs.Trainer(net, trainerOpts(1));
   const v = new convnetjs.Vol(1, 1, 2);
-  let sum = pass.loss; // the animated pass was this epoch's first sample
+  let sum = pass.loss, cnt = 1; // the animated pass was this epoch's first sample
   for (let i = 0; i < data.length; i++) {
-    if (i === pass.p) continue;
+    if (i === pass.p || valMask[i]) continue; // held-out points never train
     v.w[0] = data[i][0]; v.w[1] = data[i][1];
     sum += tmp.train(v, labels[i]).loss;
+    cnt++;
   }
-  recordLoss(sum / data.length, 1);
+  recordLoss(sum / cnt, 1);
   startPass(paused);
 }
 
@@ -1098,7 +1224,7 @@ function inferProbs() {
 function updateInferReadout() {
   const w = inferProbs();
   $('#inferPtVal').textContent = `(${fmt(inferPt[0])}, ${fmt(inferPt[1])})`;
-  const ok = w[DOG] > w[CAT];
+  const ok = callsOk(w);
   $('#inferOutVal').innerHTML =
     `<b style="color:${C.dog}">P(ok) ${fmt(w[DOG])}</b> · ` +
     `<b style="color:${C.cat}">P(rough) ${fmt(w[CAT])}</b> → ` +
@@ -1118,8 +1244,8 @@ function inferCaption(st) {
       return passCaption(st); // the forward story is identical to training's
     default: {
       const w = pass.acts[net.layers.length - 1];
-      const ok = w[DOG] > w[CAT];
-      return `Done · P(ok) = ${fmt(w[DOG])}, P(rough) = ${fmt(w[CAT])} — the net grades this waypoint ${ok ? 'moderate turbulence at worst: stay on plan' : 'moderate chop or worse: divert around it'}. Move the waypoint or press Run to replay.`;
+      const ok = callsOk(w);
+      return `Done · P(ok) = ${fmt(w[DOG])}, P(rough) = ${fmt(w[CAT])}; divert line at P(rough) ≥ ${state.threshold.toFixed(2)} — the net grades this waypoint ${ok ? 'tolerable: stay on plan' : 'not worth the risk: divert around it'}. Move the waypoint or press Run to replay.`;
     }
   }
 }
@@ -1234,6 +1360,13 @@ function axisLabels() {
 }
 
 /* ---------------- forward-pass field ---------------- */
+/* the decision rule every map and readout shares: at 0.5 this is plain argmax;
+   inference mode lets the crew slide the divert threshold away from 0.5 */
+function callsOk(P) {
+  const thr = state.mode === 'infer' ? state.threshold : 0.5;
+  return P[CAT] < thr;
+}
+
 function computeField(S) {
   const step = S / (GRID_COLS - 1);
   const nL = net.layers.length;
@@ -1256,7 +1389,7 @@ function computeField(S) {
       v.w[0] = (px - S / 2) / ss;
       v.w[1] = (py - S / 2) / ss;
       const a = net.forward(v, false);
-      const isDog = a.w[DOG] > a.w[CAT];
+      const isDog = callsOk(a.w);
       if (f.cells) f.cells.push(px, py, isDog ? 1 : 0);
       if (cx % GRID_STEP === 0 && cy % GRID_STEP === 0) {
         for (let li = 0; li < nL; li++) {
@@ -1272,9 +1405,14 @@ function computeField(S) {
     }
   }
   const infer = state.mode === 'infer';
+  f.miss = 0; // rough PIREPs the net currently grades ok — the dangerous error
+  f.falseAlarm = 0; // ok PIREPs graded rough — costly but safe
   for (let i = 0; i < data.length; i++) {
     v.w[0] = data[i][0]; v.w[1] = data[i][1];
-    net.forward(v, false);
+    const a = net.forward(v, false);
+    const predOk = callsOk(a.w);
+    if (labels[i] === CAT && predOk) f.miss++;
+    else if (labels[i] === DOG && !predOk) f.falseAlarm++;
     for (let li = 0; li < nL; li++) {
       const w = net.layers[li].out_act.w;
       f.pts[li].push({ x: w[0], y: w.length > 1 ? w[1] : 0, lab: labels[i], tag: !infer && tagged[i] });
@@ -1286,7 +1424,7 @@ function computeField(S) {
     // the inference point rides through every diagram as the (only) gold trace
     v.w[0] = inferPt[0]; v.w[1] = inferPt[1];
     const a = net.forward(v, false);
-    const lab = a.w[DOG] > a.w[CAT] ? DOG : CAT;
+    const lab = callsOk(a.w) ? DOG : CAT;
     for (let li = 0; li < nL; li++) {
       const w = net.layers[li].out_act.w;
       f.pts[li].push({ x: w[0], y: w.length > 1 ? w[1] : 0, lab, tag: true });
@@ -1337,7 +1475,8 @@ function tickLabel(v) {
 function drawDot(ctx, x, y, r, p) {
   ctx.beginPath();
   ctx.arc(x, y, r, 0, Math.PI * 2);
-  ctx.fillStyle = p.tag ? C.tag : (p.lab === DOG ? C.dog : C.cat);
+  // held-out points wear grey: the exam questions, not the study material
+  ctx.fillStyle = p.val ? C.muted : p.tag ? C.tag : (p.lab === DOG ? C.dog : C.cat);
   ctx.fill();
   ctx.lineWidth = 1.5;
   ctx.strokeStyle = p.tag ? C.ink : C.surface;
@@ -1442,11 +1581,14 @@ function render() {
   if (!$('#layerCanvas').hidden) drawSelected(fitCanvas($('#layerCanvas')), field);
   drawArch();
   drawMinis(field);
-  drawSpark();
   drawDescent();
   if (timelineShown()) drawTimeline();
-  $('#lossVal').textContent = state.loss == null ? '—' : state.loss.toFixed(4);
+  $('#lossVal').textContent = state.loss == null ? '—'
+    : state.valLoss != null
+      ? `${state.loss.toFixed(3)} · ${state.valLoss.toFixed(3)}`
+      : state.loss.toFixed(4);
   $('#epochVal').textContent = state.epoch.toLocaleString();
+  $('#confVal').textContent = field ? `${field.miss} · ${field.falseAlarm}` : '— · —';
 }
 
 function drawFeature({ ctx, w: S }, f) {
@@ -1521,7 +1663,7 @@ function drawFeature({ ctx, w: S }, f) {
   for (let i = 0; i < data.length; i++) {
     if (reveal && !reveal.shown.has(i)) continue; // this report isn't in yet
     drawDot(ctx, S / 2 + data[i][0] * f.ss, S / 2 + data[i][1] * f.ss, 5,
-      { lab: labels[i], tag: tagged[i] });
+      { lab: labels[i], tag: tagged[i], val: valMask[i] });
   }
 
   // freshly-filed PIREPs wear their tail number + grade for a moment
@@ -2687,25 +2829,6 @@ function onArchClick(e) {
   }
 }
 
-function drawSpark() {
-  const { ctx, w, h } = fitCanvas($('#sparkCanvas'));
-  ctx.clearRect(0, 0, w, h);
-  const hist = state.lossHist;
-  if (hist.length < 2) return;
-  let min = Infinity, max = -Infinity;
-  for (const v of hist) { if (v < min) min = v; if (v > max) max = v; }
-  const dv = Math.max(max - min, 1e-9);
-  ctx.strokeStyle = C.spark;
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  for (let i = 0; i < hist.length; i++) {
-    const x = i / (hist.length - 1) * (w - 2) + 1;
-    const y = h - 3 - (hist[i] - min) / dv * (h - 6);
-    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-  }
-  ctx.stroke();
-}
-
 /* ---------------- gradient descent landscape ----------------
    The loss surface lives in one dimension per weight, so it can't be drawn —
    but a 2-D slice through the current weights can be evaluated for real:
@@ -2806,13 +2929,14 @@ function descentLossHere(v, step) {
   const zLayer = net.layers[net.layers.length - 2]; // raw scores feeding softmax
   let sum = 0, cnt = 0;
   for (let k = 0; k < data.length; k += step) {
+    if (valMask[k]) continue; // the landscape is the loss training descends
     v.w[0] = data[k][0];
     v.w[1] = data[k][1];
     const P = net.forward(v, false).w;
     sum += fn.value(P, zLayer.out_act.w, labels[k]);
     cnt++;
   }
-  return sum / cnt;
+  return cnt ? sum / cnt : 0;
 }
 
 function descentCompute() {
@@ -3153,7 +3277,7 @@ function drawDescent3DInto(cv) {
    log book tab. */
 const LOGBOOK_KEY = 'nn-example-logbook';
 const LOGBOOK_CAP = 24;
-const WEATHER_NAME = { simple: 'front', circle: 'storm cell', spiral: 'cyclone', random: 'scattered' };
+const WEATHER_NAME = { simple: 'front', circle: 'storm cell', spiral: 'cyclone', random: 'scattered', rare: 'rare rough', custom: 'imported csv' };
 let logbook = [];
 let logIndex = -1;
 let logPlayTimer = null;
@@ -3197,6 +3321,9 @@ function takeSnapshot() {
     hidden: state.hidden.slice(),
     activation: state.activation,
     lossFn: state.lossFn,
+    optimizer: state.optimizer,
+    noise: state.noise,
+    holdout: state.holdout,
     lr: state.lr,
     momentum: state.momentum,
     batch: state.batch,
@@ -3235,8 +3362,9 @@ function renderLogbook() {
     + `epoch ${b(e.epoch.toLocaleString())} · loss ${b(e.loss == null ? '—' : e.loss.toFixed(4))} · `
     + `${b(WEATHER_NAME[e.weather] || e.weather)} · layers ${b(e.hidden.join('·') || 'none')} · ${b(e.activation)} · `
     + `${b((LOSS_FNS[e.lossFn] || LOSS_FNS.ce).label)}<br>`
-    + `lr ${b(e.lr)} · momentum ${b(e.momentum.toFixed(2))} · batch ${b(e.batch)} · L2 ${b(e.l2)} · `
-    + `${b(e.points)} pireps${e.r ? ` · slice ±${b(e.r)}` : ''}`;
+    + `${b(e.optimizer || 'sgd')} · lr ${b(e.lr)} · momentum ${b(e.momentum.toFixed(2))} · batch ${b(e.batch)} · L2 ${b(e.l2)} · `
+    + `${b(e.points)} pireps${e.noise ? ` · noise ${b(Math.round(e.noise * 100) + '%')}` : ''}`
+    + `${e.holdout ? ` · ${b('val hold-out')}` : ''}${e.r ? ` · slice ±${b(e.r)}` : ''}`;
 }
 
 function stopLogbookPlay() {
@@ -3503,6 +3631,7 @@ const HIT_RADIUS_PX = 9;
 function pointAt(xt, yt, ss) {
   let mink = -1, mind = Infinity;
   for (let k = 0; k < data.length; k++) {
+    if (valMask[k]) continue; // held-out reports are display-only
     const dx = (data[k][0] - xt) * ss, dy = (data[k][1] - yt) * ss;
     const d = dx * dx + dy * dy;
     if (d < mind) { mind = d; mink = k; }
@@ -3589,6 +3718,7 @@ function addPirep(cls, x, y) {
   data.push([x, y]);
   labels.push(lab);
   tagged.push(false);
+  valMask.push(false); // hand-filed reports always train
   markDescentDirty(); // the surface is loss-over-THIS-data
   if (reveal) reveal.shown.add(data.length - 1); // a hand-filed report lands at once
   const grade = (lab === DOG ? 1 : 4) + Math.floor(Math.random() * 3);
@@ -3681,7 +3811,12 @@ function initSidePanel() {
       $('#' + p).hidden = !on;
     });
   };
-  tabs.forEach(([t]) => $('#' + t).addEventListener('click', () => activate(t)));
+  tabs.forEach(([t]) => $('#' + t).addEventListener('click', () => {
+    // choosing another info tab is leaving the walkthrough: guidance ends
+    // and the click-to-describe jumps come back
+    if (t !== 'tabExplore') exploreGuiding = false;
+    activate(t);
+  }));
 
   // Next chips walk the tabs in order (Decide wraps back to Intro), each
   // landing at the top of the next pane
@@ -3702,6 +3837,9 @@ function initSidePanel() {
   // documents — shared by the panel-background handlers below and by the
   // network canvas's pass-mode regions (onArchClick)
   showDescribeCard = (cardId, secId) => {
+    // mid-walkthrough, page clicks are the user following steps — opening
+    // Describe cards over the to-do list would derail them
+    if (exploreGuiding) return;
     activate('tabDescribe');
     const card = document.getElementById(cardId);
     if (card.id !== 'desc-timeline') endTimelinePreview();
@@ -4026,8 +4164,278 @@ function fsAttention(followUp) {
   }, 4000);
 }
 
+/* ---------------- control sync: push state back into the widgets ----------------
+   Everything that sets state programmatically (a share link, an imported net)
+   funnels through here so the controls always tell the truth. */
+const OPTIMIZERS = ['sgd', 'nesterov', 'adagrad', 'windowgrad', 'adadelta'];
+
+function syncControlUI() {
+  $('#activationSel').value = state.activation;
+  $('#lossSel').value = state.lossFn;
+  $('#optimizerSel').value = state.optimizer;
+  const nearest = (steps, v) => {
+    let best = 0;
+    steps.forEach((s, i) => { if (Math.abs(s - v) < Math.abs(steps[best] - v)) best = i; });
+    return best;
+  };
+  const setSlider = (id, valId, idx, text) => {
+    $(id).value = idx;
+    $(valId).textContent = text;
+  };
+  state.lr = LR_STEPS[nearest(LR_STEPS, state.lr)];
+  setSlider('#lrSlider', '#lrVal', nearest(LR_STEPS, state.lr), String(state.lr));
+  $('#momentumSlider').value = state.momentum;
+  $('#momentumVal').textContent = state.momentum.toFixed(2);
+  state.batch = BATCH_STEPS[nearest(BATCH_STEPS, state.batch)];
+  setSlider('#batchSlider', '#batchVal', nearest(BATCH_STEPS, state.batch), String(state.batch));
+  state.l2 = L2_STEPS[nearest(L2_STEPS, state.l2)];
+  setSlider('#l2Slider', '#l2Val', nearest(L2_STEPS, state.l2), String(state.l2));
+  document.querySelectorAll('#noiseSeg button').forEach((b) => {
+    b.setAttribute('aria-pressed', String(+b.dataset.noise === state.noise));
+  });
+  $('#valCheck').checked = state.holdout;
+  $('#thrSlider').value = state.threshold;
+  $('#thrVal').textContent = state.threshold.toFixed(2);
+  applyRunLocks();
+}
+
+/* a moment of button feedback without a modal */
+function flashBtn(btn, text) {
+  if (btn.dataset.flashing) return;
+  const old = btn.textContent;
+  btn.dataset.flashing = '1';
+  btn.textContent = text;
+  setTimeout(() => { btn.textContent = old; delete btn.dataset.flashing; }, 1300);
+}
+
+/* ---------------- model save / load ---------------- */
+function saveNet() {
+  const payload = {
+    app: 'nn-example', version: 1,
+    settings: {
+      hidden: state.hidden.slice(), activation: state.activation,
+      lossFn: state.lossFn, optimizer: state.optimizer,
+      lr: state.lr, momentum: state.momentum, batch: state.batch, l2: state.l2,
+    },
+    net: net.toJSON(),
+  };
+  const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `nn-example-net-${state.epoch}ep.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function applyImportedNet(obj) {
+  if (!obj || !obj.net || !Array.isArray(obj.net.layers)) throw new Error('not a net file');
+  // the file's own layers are the source of truth for the architecture
+  const fcs = obj.net.layers.filter((L) => L.layer_type === 'fc');
+  if (!fcs.length || fcs[fcs.length - 1].out_depth !== 2) throw new Error('not a 2-class net');
+  const hidden = fcs.slice(0, -1).map((L) => L.out_depth);
+  if (hidden.length > MAX_HIDDEN_LAYERS || hidden.some((n) => n < 2 || n > 8)) {
+    throw new Error('architecture outside this demo’s ranges');
+  }
+  const act = obj.net.layers.find((L) => ['relu', 'tanh', 'sigmoid'].includes(L.layer_type));
+  const s = obj.settings || {};
+  if (LOSS_FNS[s.lossFn]) state.lossFn = s.lossFn;
+  if (OPTIMIZERS.includes(s.optimizer)) state.optimizer = s.optimizer;
+  if (typeof s.lr === 'number') state.lr = s.lr;
+  if (typeof s.momentum === 'number') state.momentum = Math.min(Math.max(s.momentum, 0), 0.95);
+  if (typeof s.batch === 'number') state.batch = s.batch;
+  if (typeof s.l2 === 'number') state.l2 = s.l2;
+  state.hidden = hidden;
+  if (act) state.activation = act.layer_type;
+  renderLayerChips();
+  buildNet();          // right shapes, fresh UI state (epoch 0, empty history)
+  net.fromJSON(obj.net); // …then drop in the trained weights
+  patchLossHead();     // fromJSON rebuilt the layers: re-attach the loss dispatch
+  buildTrainer();
+  syncControlUI();
+  markDescentDirty();
+  requestRender();
+}
+
+/* ---------------- weather save / load (CSV) ----------------
+   One row per PIREP: x0,x1,y — position in map units (the visible airspace
+   spans ±5.2) and the class, 1 = ok ride, 0 = rough. Anything the presets
+   can't draw can come in this way. */
+function saveWeatherCsv() {
+  const rows = data.map((p, i) => `${p[0]},${p[1]},${labels[i]}`);
+  const blob = new Blob(['x0,x1,y\n' + rows.join('\n') + '\n'], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `nn-example-weather-${WEATHER_NAME[state.dataset].replace(/\s+/g, '-')}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function parseWeatherCsv(text) {
+  const pts = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const f = line.split(/[,;\t]/).map((s) => s.trim());
+    if (f.length < 3) throw new Error('need 3 columns: x0,x1,y');
+    const x0 = parseFloat(f[0]);
+    const x1 = parseFloat(f[1]);
+    if (!Number.isFinite(x0) || !Number.isFinite(x1)) {
+      if (!pts.length) continue; // a header row like "x0,x1,y"
+      throw new Error(`bad coordinates: "${line}"`);
+    }
+    // the class column: 1/0, or ok/rough as a courtesy
+    const ys = f[2].toLowerCase();
+    const y = ys === 'ok' ? DOG : ys === 'rough' ? CAT : parseFloat(ys);
+    if (y !== DOG && y !== CAT) throw new Error(`class must be 1 (ok) or 0 (rough): "${line}"`);
+    if (Math.abs(x0) > 100 || Math.abs(x1) > 100) throw new Error('coordinates out of range');
+    pts.push([x0, x1, y]);
+  }
+  if (pts.length < 2) throw new Error('need at least 2 rows');
+  if (pts.length > 1000) throw new Error('too many rows (max 1000)');
+  return pts;
+}
+
+function applyImportedWeather(pts) {
+  customWeather = pts;
+  setData('custom', $('#animCheck').checked); // full weather-change bookkeeping
+}
+
+/* ---------------- shareable setup link ---------------- */
+function buildShareLink() {
+  const p = new URLSearchParams();
+  // an imported CSV can't travel in a link — the recipient gets the default
+  if (state.dataset !== 'custom') p.set('w', state.dataset);
+  p.set('h', state.hidden.join('.'));
+  p.set('act', state.activation);
+  p.set('loss', state.lossFn);
+  p.set('opt', state.optimizer);
+  p.set('lr', state.lr);
+  p.set('mom', state.momentum);
+  p.set('b', state.batch);
+  p.set('l2', state.l2);
+  if (state.noise) p.set('noise', state.noise);
+  if (state.holdout) p.set('val', '1');
+  if (state.threshold !== 0.5) p.set('thr', state.threshold);
+  return location.href.split('#')[0] + '#' + p.toString();
+}
+
+/* runs before the first setData/buildNet: the hash describes the experiment,
+   never the weights */
+function applyShareParams() {
+  if (!location.hash || location.hash.length < 2) return;
+  let p;
+  try { p = new URLSearchParams(location.hash.slice(1)); } catch { return; }
+  const num = (k) => { const v = parseFloat(p.get(k)); return Number.isFinite(v) ? v : null; };
+  if (DATASETS[p.get('w')] && p.get('w') !== 'custom') state.dataset = p.get('w');
+  if (p.get('h') != null) {
+    const hidden = p.get('h') === '' ? []
+      : p.get('h').split('.').map((n) => parseInt(n, 10));
+    if (hidden.length <= MAX_HIDDEN_LAYERS && hidden.every((n) => n >= 2 && n <= 8)) {
+      state.hidden = hidden;
+    }
+  }
+  if (['relu', 'tanh', 'sigmoid'].includes(p.get('act'))) state.activation = p.get('act');
+  if (LOSS_FNS[p.get('loss')]) state.lossFn = p.get('loss');
+  if (OPTIMIZERS.includes(p.get('opt'))) state.optimizer = p.get('opt');
+  if (num('lr') != null) state.lr = num('lr');
+  if (num('mom') != null) state.momentum = Math.min(Math.max(num('mom'), 0), 0.95);
+  if (num('b') != null) state.batch = num('b');
+  if (num('l2') != null) state.l2 = num('l2');
+  if (num('noise') != null && [0, 0.1, 0.25].includes(num('noise'))) state.noise = num('noise');
+  if (p.get('val') === '1') state.holdout = true;
+  if (num('thr') != null) state.threshold = Math.min(Math.max(num('thr'), 0.05), 0.95);
+}
+
+/* ---------------- explore tab: guided to-do explorations ----------------
+   Every exploration is an ordered to-do list. Clicking a step (or walking
+   with prev/next) switches to the mode/tab the step needs, then rings the
+   control it talks about; steps behind the active one show as done. */
+let expFlashTimer = null;
+/* while a walkthrough is engaged, the page's click-to-describe behavior
+   (panel backgrounds and detail tabs jumping the side panel to their
+   Describe card) is suspended — a step that says "open the loss map (2d)"
+   must not yank the user off their to-do list. Cleared when the card
+   finishes or the user leaves the Explore tab themselves. */
+let exploreGuiding = false;
+
+function runExploreStep(li) {
+  const d = li.dataset;
+  if (d.mode && state.mode !== d.mode) {
+    const chip = document.querySelector(`.mode-seg button[data-mode="${d.mode}"]`);
+    if (chip) chip.click();
+    // setMode hands the side panel to Intro/Decide — bring the list back
+    $('#tabExplore').click();
+  }
+  // engage guidance before the tab/target clicks below, or the very click
+  // this step performs would jump the side panel to a Describe card
+  exploreGuiding = true;
+  if (d.tab) {
+    const tab = document.querySelector(d.tab);
+    if (tab && !tab.hidden) tab.click();
+  }
+  document.querySelectorAll('.exp-hl').forEach((x) => x.classList.remove('exp-hl'));
+  if (!d.target) return;
+  const el = document.querySelector(d.target);
+  if (!el) return;
+  // ring the tightest sensible box: a control group when there is one, the
+  // widget itself when it stands alone (the camera button, say) — only a
+  // whole panel when the step is genuinely about the panel
+  const box = el.closest('.ctl') || el.closest('.stat')
+    || (el.matches('button, select, input, label') ? el : el.closest('.panel') || el);
+  box.classList.add('exp-hl');
+  box.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  clearTimeout(expFlashTimer);
+  expFlashTimer = setTimeout(() => box.classList.remove('exp-hl'), 3200);
+}
+
+function initExplore() {
+  document.querySelectorAll('.exp-card').forEach((card) => {
+    const steps = [...card.querySelectorAll('.exp-steps li')];
+    if (!steps.length) return;
+    const pos = card.querySelector('.exp-pos');
+    const prevBtn = card.querySelector('.exp-prev');
+    const nextBtn = card.querySelector('.exp-next');
+    let idx = -1;          // nothing engaged until the first click
+    let finished = false;
+    const paint = () => {
+      steps.forEach((li, k) => {
+        li.classList.toggle('active', !finished && k === idx);
+        li.classList.toggle('done', finished || k < idx);
+      });
+      pos.textContent = finished ? 'done ✓'
+        : idx < 0 ? `${steps.length} steps`
+          : `step ${idx + 1} of ${steps.length}`;
+      prevBtn.disabled = idx <= 0 && !finished;
+      nextBtn.disabled = finished;
+    };
+    const goto = (i) => {
+      finished = false;
+      idx = i;
+      paint();
+      runExploreStep(steps[idx]); // engages exploreGuiding itself, mid-step
+    };
+    steps.forEach((li, k) => li.addEventListener('click', () => goto(k)));
+    prevBtn.addEventListener('click', () => {
+      if (finished) { goto(steps.length - 1); return; }
+      if (idx > 0) goto(idx - 1);
+    });
+    nextBtn.addEventListener('click', () => {
+      if (idx >= steps.length - 1) {
+        finished = true;
+        exploreGuiding = false; // walkthrough complete: describe jumps return
+        paint();
+        document.querySelectorAll('.exp-hl').forEach((x) => x.classList.remove('exp-hl'));
+        return;
+      }
+      goto(idx + 1);
+    });
+    paint();
+  });
+}
+
 /* ---------------- init ---------------- */
 function init() {
+  applyShareParams(); // a shared link seeds the experiment before anything builds
   setData(state.dataset);
   renderLayerChips();
   buildNet();
@@ -4069,8 +4477,10 @@ function init() {
   $('#lbDownload').addEventListener('click', downloadLogbookEntry);
   $('#lbRemove').addEventListener('click', removeLogbookEntry);
   initSidePanel();
+  initExplore();
   initModal();
   initFullscreen();
+  syncControlUI(); // share-link params (if any) reach the widgets
   applyFeaturePanelLabels();
 
   document.querySelectorAll('#datasetSeg button').forEach((b) => {
@@ -4087,6 +4497,73 @@ function init() {
     state.lossFn = e.target.value;
     markDescentDirty(); // the landscape is loss-over-weights: new terrain
     requestRender();
+  });
+  // the optimizer is a live dial too: same weights, different descent rule
+  $('#optimizerSel').addEventListener('change', (e) => {
+    state.optimizer = e.target.value;
+    buildTrainer();
+    applyRunLocks(); // momentum greys out under the adaptive methods
+    requestRender();
+  });
+  document.querySelectorAll('#noiseSeg button').forEach((b) => {
+    b.addEventListener('click', () => {
+      state.noise = +b.dataset.noise;
+      document.querySelectorAll('#noiseSeg button').forEach((x) => {
+        x.setAttribute('aria-pressed', String(x === b));
+      });
+      setData(state.dataset, $('#animCheck').checked); // new labels = new dataset
+    });
+  });
+  $('#valCheck').addEventListener('change', (e) => {
+    state.holdout = e.target.checked;
+    rebuildValMask();
+    // a point that just went into the hold-out can't stay traced or selected
+    tagged = tagged.map((t, i) => t && !valMask[i]);
+    if (selectedPt >= 0 && valMask[selectedPt]) selectPoint(-1);
+    state.valLoss = null; state.valHist = []; state.valCurve = [];
+    markDescentDirty(); // the trained-on set just changed
+    requestRender();
+  });
+  $('#thrSlider').addEventListener('input', (e) => {
+    state.threshold = +e.target.value;
+    $('#thrVal').textContent = state.threshold.toFixed(2);
+    updateInferReadout();
+    requestRender(); // the ATC wash follows the divert line
+  });
+  $('#saveNetBtn').addEventListener('click', () => {
+    saveNet();
+    flashBtn($('#saveNetBtn'), 'saved ✓');
+  });
+  $('#loadNetBtn').addEventListener('click', () => $('#netFileInput').click());
+  $('#netFileInput').addEventListener('change', (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = ''; // same file can be re-picked later
+    if (!file) return;
+    file.text().then((txt) => {
+      applyImportedNet(JSON.parse(txt));
+      flashBtn($('#loadNetBtn'), 'loaded ✓');
+    }).catch(() => flashBtn($('#loadNetBtn'), 'invalid file'));
+  });
+  $('#saveCsvBtn').addEventListener('click', () => {
+    saveWeatherCsv();
+    flashBtn($('#saveCsvBtn'), 'saved ✓');
+  });
+  $('#loadCsvBtn').addEventListener('click', () => $('#csvFileInput').click());
+  $('#csvFileInput').addEventListener('change', (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    file.text().then((txt) => {
+      applyImportedWeather(parseWeatherCsv(txt));
+      flashBtn($('#loadCsvBtn'), 'loaded ✓');
+    }).catch(() => flashBtn($('#loadCsvBtn'), 'invalid csv'));
+  });
+  $('#shareBtn').addEventListener('click', () => {
+    const url = buildShareLink();
+    location.hash = url.split('#')[1]; // the address bar becomes shareable too
+    navigator.clipboard.writeText(url)
+      .then(() => flashBtn($('#shareBtn'), 'copied ✓'))
+      .catch(() => flashBtn($('#shareBtn'), 'link in address bar'));
   });
   // sliders apply live on drag; trainer swap keeps the learned weights
   const slider = (id, valId, key, steps, fmt) => {
@@ -4136,6 +4613,7 @@ function init() {
     data.splice(selectedPt, 1);
     labels.splice(selectedPt, 1);
     tagged.splice(selectedPt, 1);
+    valMask.splice(selectedPt, 1);
     selectPoint(-1);
     markDescentDirty();
     requestRender();

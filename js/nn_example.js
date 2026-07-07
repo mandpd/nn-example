@@ -411,7 +411,10 @@ function buildNet() {
   clearHistory();
   state.epoch = 0; state.loss = null; state.lossHist = []; state.lossCurve = [];
   state.valLoss = null; state.valHist = []; state.valCurve = [];
-  state.lix = net.layers.length - 1; // fresh net: start on the final output
+  // fresh net: start on the output fc layer — the two raw class scores show
+  // how the space gets warped into the linear form softmax then reads off;
+  // the softmax stage itself stays one click away in the strip
+  state.lix = net.layers.length - 2;
   state.view = { kind: 'layer' }; // node/edge references die with the old net
   state.d0 = 0;
   state.d1 = Math.min(1, net.layers[state.lix].out_depth - 1);

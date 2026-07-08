@@ -69,7 +69,8 @@ let archRows = [];         // network-diagram rows {y, idxs} for hit-testing
 let archNodes = [];        // network-diagram nodes {x, y, rowIdx, j}
 let archEdges = [];        // network-diagram edges {x1,y1,x2,y2, rowIdx, i, j}
 let archActs = [];         // network-diagram activation bands {y, rowIdx, actIdx, xMin, xMax}
-let archMatX = Infinity;   // left edge of the pass-mode matrix panel (clicks beyond it are ignored)
+let archMatX = Infinity;   // left edge of a side-by-side pass-mode matrix panel (clicks beyond it are ignored)
+let archMatY = Infinity;   // top edge of a stacked (below-diagram) pass-mode matrix band
 let showDescribeCard = null; // set by initSidePanel: jump to a Describe card + flash its panel
 
 const LR_STEPS = [0.0003, 0.001, 0.003, 0.01, 0.03, 0.1, 0.3];
@@ -2092,13 +2093,27 @@ function drawArch() {
   const probe = ps ? pass.p : (state.view.kind !== 'layer' ? probeIndex() : -1);
   if (probe >= 0 && !ps) forwardProbe(probe);
 
-  // single-pass mode reserves a right-hand strip for the matrix view from the
-  // moment the mode opens — idle it shows the sample vector and a Run hint,
-  // during a pass the step being animated (skipped when the canvas is narrow)
-  const showMat = state.mode === 'pass' && W >= 640;
-  const annW = showMat ? Math.min(360, Math.max(300, Math.round(W * 0.36))) : 0;
+  // single-pass mode always reserves room for the matrix view (idle it shows the
+  // sample vector and a Run hint, during a pass the step being animated). Layout
+  // depends on the canvas shape:
+  //  · a *tall, roughly-square/portrait* canvas — the single-column phone/tablet
+  //    layout — drops the matrix into a full-width band *below* the diagram.
+  //  · everything else keeps it as a right-hand strip, with the reserved width
+  //    scaled down on narrower canvases so the diagram stays usable.
+  // Two-column rows are landscape and short (H ≈ 0.7–0.8·W), while the single
+  // column makes the canvas square (aspect-ratio:1), so the `H >= W*0.9` test
+  // cleanly stacks only the single-column layout. The strip
+  // reaches down to W ≥ 480 so the matrix never vanishes at intermediate widths;
+  // below that the canvas is too small for either arrangement.
+  const isPass = state.mode === 'pass';
+  const stackMat = isPass && W < 820 && H >= 460 && H >= W * 0.9;
+  const sideMat = isPass && !stackMat && W >= 480;
+  const annW = sideMat ? Math.min(360, Math.max(240, Math.round(W * 0.36))) : 0;
+  const matH = stackMat ? Math.min(280, Math.max(196, Math.round(H * 0.4))) : 0;
   const netW = W - annW;
-  archMatX = showMat ? netW : Infinity;
+  const netH = H - matH;
+  archMatX = sideMat ? netW : Infinity;
+  archMatY = stackMat ? netH : Infinity;
 
   const padTop = probe >= 0 ? 44 : 34;
   // pass mode also reserves room under the output row for the loss badge and
@@ -2109,7 +2124,7 @@ function drawArch() {
   const maxCount = Math.max(...rows.map((r) => r.count));
   const spacing = Math.min(52, (netW - 150) / Math.max(maxCount - 1, 1));
   const extra = rows.reduce((s, r) => s + (r.side ? actGap : 0), 0);
-  const gapBetween = rows.length > 1 ? (H - padTop - padBot - extra) / (rows.length - 1) : 0;
+  const gapBetween = rows.length > 1 ? (netH - padTop - padBot - extra) / (rows.length - 1) : 0;
   const nodeY = [], actY = [];
   let yCur = padTop;
   rows.forEach((r, i) => {
@@ -2340,7 +2355,7 @@ function drawArch() {
   // show its slope P − y being injected back into the output nodes
   if (isTrainPass && (ps.phase === 'loss' || ps.seed)) {
     const out = rows[rows.length - 1];
-    const yBadge = H - 16;
+    const yBadge = netH - 16;
     ctx.textAlign = 'center';
     ctx.font = '600 11px ui-monospace, Menlo, monospace';
     if (ps.seed) {
@@ -2370,7 +2385,8 @@ function drawArch() {
     ctx.textAlign = 'left';
   }
 
-  if (showMat) drawPassMatrixPanel(ctx, netW, W, H, rows);
+  if (sideMat) drawPassMatrixPanel(ctx, netW, W, H, rows);
+  else if (stackMat) drawPassMatrixBand(ctx, 0, W, netH, H, rows);
   if (probe >= 0) drawProbeCaption(ctx, W, probe);
 }
 
@@ -2739,6 +2755,57 @@ function drawPassMatrixPanel(ctx, x0, x1, H, rows) {
   if (spec.graph) drawLossCurve(ctx, px0, px1, H - footH - graphH - 10, graphH, spec.graph);
 }
 
+/* The same matrix view laid out as a full-width band below the diagram, for
+   canvases too narrow to spare a right-hand strip. Because the band is wide and
+   short the expression wraps across the width (fewer lines), and on the loss
+   step the loss curve sits beside the expression rather than under it. */
+function drawPassMatrixBand(ctx, x0, x1, yTop, yBot, rows) {
+  const spec = pass ? passMatrixSpec(pass.steps[pass.si], rows) : passIdleMatrixSpec();
+  if (!spec) return;
+  ctx.strokeStyle = 'rgba(255,255,255,0.10)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(x0 + 14, yTop + 0.5);
+  ctx.lineTo(x1 - 14, yTop + 0.5);
+  ctx.stroke();
+
+  const px0 = x0 + 18, px1 = x1 - 14;
+  // title and subtitle share one line to conserve the band's scarce height
+  ctx.textAlign = 'left';
+  ctx.font = MAT_LBL_FONT;
+  ctx.fillStyle = C.tag;
+  const titleUp = spec.title.toUpperCase();
+  ctx.fillText(titleUp, px0, yTop + 20);
+  const titleW = ctx.measureText(titleUp).width;
+  ctx.font = MAT_FONT;
+  ctx.fillStyle = C.muted;
+  ctx.fillText(spec.sub, px0 + titleW + 12, yTop + 20);
+
+  // footer clamped to a single line along the bottom edge
+  let footH = 0;
+  if (spec.footer) {
+    ctx.font = MAT_FONT;
+    ctx.fillStyle = C.muted;
+    let f = spec.footer;
+    if (ctx.measureText(f).width > px1 - px0) {
+      while (f.length && ctx.measureText(f + '…').width > px1 - px0) f = f.slice(0, -1);
+      f = f.replace(/\s+$/, '') + '…';
+    }
+    ctx.fillText(f, px0, yBot - 8);
+    footH = 18;
+  }
+
+  const cTop = yTop + 30, cBot = yBot - footH - 6;
+  const yMid = (cTop + cBot) / 2;
+  if (spec.graph) {
+    const split = x0 + Math.round((x1 - x0) * 0.52);
+    drawMatExpr(ctx, px0, split - 12, yMid, spec.items);
+    drawLossCurve(ctx, split, px1, cTop, cBot - cTop, spec.graph);
+  } else {
+    drawMatExpr(ctx, px0, px1, yMid, spec.items);
+  }
+}
+
 function drawLossCurve(ctx, x0, x1, yTop, hBox, g) {
   const fn = lossFn();
   const gx = x0 + 26, gw = x1 - x0 - 40, gy = yTop + 10, gh = hBox - 40;
@@ -2798,8 +2865,8 @@ function segDist(px, py, x1, y1, x2, y2) {
 
 function onArchClick(e) {
   const px = e.offsetX, py = e.offsetY;
-  if (px >= archMatX) {
-    // the matrix strip is display-only — explain it instead
+  if (px >= archMatX || py >= archMatY) {
+    // the matrix panel is display-only — explain it instead
     if (state.mode === 'pass' && showDescribeCard) {
       showDescribeCard('desc-pass-matrix', 'panelNetwork');
     }
